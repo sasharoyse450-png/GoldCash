@@ -2,6 +2,7 @@ import os, json, hmac, hashlib, logging, asyncio, time, math, random
 from urllib.parse import parse_qsl
 from contextlib import asynccontextmanager
 from math import comb
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -43,7 +44,6 @@ WITHDRAW_COOLDOWN_MIN = int(os.environ.get("WITHDRAW_COOLDOWN_MIN", "15"))
 MAX_WITHDRAW_DAILY = float(os.environ.get("MAX_WITHDRAW_DAILY", "500"))
 REFERRAL_SHARE = float(os.environ.get("REFERRAL_SHARE", "0.05"))
 WAGER_RESET_THRESHOLD = float(os.environ.get("WAGER_RESET_THRESHOLD", "0.1"))
-RAKEBACK_MIN = float(os.environ.get("RAKEBACK_MIN", "1.0"))
 ANTIFRAUD_ENABLED = os.environ.get("ANTIFRAUD_ENABLED", "1") == "1"
 AUTO_FLAG_SCORE = int(os.environ.get("AUTO_FLAG_SCORE", "50"))
 
@@ -74,33 +74,28 @@ def ensure_game_enabled(game: str):
 
 # ================== VIP TIERS ==================
 VIP_TIERS = [
-    {"id": "bronze",   "name": "🥉 Бронза",   "wagered": 0,     "rakeback": 0.010, "max_bet_mult": 1.0},
-    {"id": "silver",   "name": "🥈 Серебро",  "wagered": 100,   "rakeback": 0.020, "max_bet_mult": 2.0},
-    {"id": "gold",     "name": "🥇 Золото",   "wagered": 500,   "rakeback": 0.030, "max_bet_mult": 3.0},
-    {"id": "platinum", "name": "💎 Платина",  "wagered": 2000,  "rakeback": 0.050, "max_bet_mult": 5.0},
-    {"id": "diamond",  "name": "💠 Даймонд",  "wagered": 10000, "rakeback": 0.070, "max_bet_mult": 10.0},
+    {"id": "bronze",   "name": "🥉 Бронза",  "wagered": 0,     "rakeback": 0.010, "max_bet_mult": 1.0},
+    {"id": "silver",   "name": "🥈 Серебро", "wagered": 100,   "rakeback": 0.020, "max_bet_mult": 2.0},
+    {"id": "gold",     "name": "🥇 Золото",  "wagered": 500,   "rakeback": 0.030, "max_bet_mult": 3.0},
+    {"id": "platinum", "name": "💎 Платина", "wagered": 2000,  "rakeback": 0.050, "max_bet_mult": 5.0},
+    {"id": "diamond",  "name": "💠 Даймонд", "wagered": 10000, "rakeback": 0.070, "max_bet_mult": 10.0},
 ]
 
 def compute_vip_tier(wagered: float) -> dict:
     tier = VIP_TIERS[0]
     for t in VIP_TIERS:
-        if wagered >= t["wagered"]:
-            tier = t
+        if wagered >= t["wagered"]: tier = t
     return tier
 
 def vip_info(p: dict) -> dict:
     wagered = float(p.get("total_wagered") or 0)
     cur = compute_vip_tier(wagered)
-    # next tier
     nxt = None
     for t in VIP_TIERS:
-        if t["wagered"] > wagered:
-            nxt = t; break
+        if t["wagered"] > wagered: nxt = t; break
     return {
-        "tier": cur["id"],
-        "tier_name": cur["name"],
-        "rakeback": cur["rakeback"],
-        "max_bet_mult": cur["max_bet_mult"],
+        "tier": cur["id"], "tier_name": cur["name"],
+        "rakeback": cur["rakeback"], "max_bet_mult": cur["max_bet_mult"],
         "total_wagered": round(wagered, 2),
         "rakeback_earned": round(float(p.get("rakeback_earned") or 0), 2),
         "next_tier": nxt["id"] if nxt else None,
@@ -109,7 +104,6 @@ def vip_info(p: dict) -> dict:
     }
 
 async def update_vip_tier(uid):
-    """Пересчитывает VIP-тир и обновляет профиль."""
     try:
         r = await sb(supabase.table("profiles").select("total_wagered, vip_tier").eq("id", uid))
         if not r.data: return
@@ -122,7 +116,6 @@ async def update_vip_tier(uid):
         log.exception("update_vip_tier failed")
 
 async def add_wager(uid, amount):
-    """Увеличивает total_wagered. Вызывается на каждой ставке."""
     try:
         amount = float(amount)
         if amount <= 0: return
@@ -133,33 +126,6 @@ async def add_wager(uid, amount):
         asyncio.create_task(update_vip_tier(uid))
     except Exception:
         log.exception("add_wager failed")
-
-async def process_rakeback(uid):
-    """Начисляет рейкбек, если накопилось ≥ RAKEBACK_MIN. Обычно вызывается админом или периодически."""
-    try:
-        r = await sb(supabase.table("profiles").select(
-            "total_wagered, rakeback_earned, last_rakeback_at, vip_tier").eq("id", uid))
-        if not r.data: return None
-        p = r.data[0]
-        last = p.get("last_rakeback_at")
-        if last:
-            try:
-                dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
-                if (datetime.now(timezone.utc) - dt).total_seconds() < 3600:
-                    return None
-            except Exception: pass
-        tier = compute_vip_tier(float(p.get("total_wagered") or 0))
-        # рейкбек считается от ставок, а не от чистого профита — 5% рейкбек это 5% от проигранного
-        # здесь упрощённо: раз в час начисляем % от суммы всех ставок
-        # правильно считать от NET проигрыша — но это уже сделано через историю
-        # дадим 0.5% от оборота в час — простое решение
-        reward = 0
-        await sb(supabase.table("profiles").update({
-            "last_rakeback_at": datetime.now(timezone.utc).isoformat()}).eq("id", uid))
-        return None
-    except Exception:
-        log.exception("process_rakeback failed")
-        return None
 
 # ================== PREDICTION GAMES ==================
 DICE_GAMES = {
@@ -216,12 +182,9 @@ def zone_label(game, val):
         if val in (1, 2):    return "🔴 красное"
         if val in (3, 4, 5): return "⚪ белое"
         if val == 6:         return "🎯 центр"
-    if game == "dice":
-        return "чёт" if val % 2 == 0 else "нечёт"
-    if game == "basket":
-        return "промах" if val <= 2 else "забил"
-    if game == "football":
-        return "мимо" if val <= 3 else "гол"
+    if game == "dice": return "чёт" if val % 2 == 0 else "нечёт"
+    if game == "basket": return "промах" if val <= 2 else "забил"
+    if game == "football": return "мимо" if val <= 3 else "гол"
     return ""
 
 PLINKO_MULTS = {
@@ -230,9 +193,7 @@ PLINKO_MULTS = {
     16: [16, 9, 2, 1.4, 1.4, 1.2, 1.1, 1.0, 0.5, 1.0, 1.1, 1.2, 1.4, 1.4, 2, 9, 16],
 }
 
-# ============== KENO (RTP ~95%) ==============
-# Юзер выбирает 1-10 чисел из 1-80. Бэкенд рисует 20.
-# Выплаты за попадания:
+# ================== KENO ==================
 KENO_PAYOUTS = {
     1:  {0: 0, 1: 3.4},
     2:  {0: 0, 1: 0, 2: 12},
@@ -246,18 +207,12 @@ KENO_PAYOUTS = {
     10: {0: 0, 1: 0, 2: 0.3, 3: 0.8, 4: 2, 5: 6, 6: 25, 7: 100, 8: 500, 9: 2500, 10: 25000},
 }
 
-# ============== HI-LO (RTP ~96%) ==============
-# Deck 2-14 (2,3,...,10,J=11,Q=12,K=13,A=14)
-# Простая версия: card_value от 2 до 14
+# ================== HI-LO ==================
 HILO_CARDS = list(range(2, 15))
 HILO_NAMES = {2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A"}
+HILO_STEP_MULT = 1.92
 
 def hilo_multiplier(current, guess, remaining_cards):
-    """
-    Вычисляет множитель для guess 'higher' или 'lower'.
-    remaining_cards — список возможных значений из оставшихся.
-    Множитель = (1 - HOUSE_EDGE) * total / favorable
-    """
     if not remaining_cards: return None
     favorable = sum(1 for c in remaining_cards
                     if (guess == "higher" and c > current) or (guess == "lower" and c < current))
@@ -265,37 +220,90 @@ def hilo_multiplier(current, guess, remaining_cards):
     total = len(remaining_cards)
     return round((1 - HOUSE_EDGE) * total / favorable, 4)
 
-# ============== SCRATCH (RTP ~94%) ==============
-# 9 клеток (3x3). Открываются 3 символа. Если 3 одинаковых — выигрыш.
-# Символы и выплаты:
-SCRATCH_SYMBOLS = [
-    ("🍋", 0,  30),   # (emoji, mult, weight)
-    ("🍒", 1.5, 25),
-    ("⭐", 3,   20),
-    ("🔔", 10,  15),
-    ("💎", 50,  8),
-    ("7️⃣", 200, 2),
+# ================== SCRATCH (9-cell, 6 tiers) ==================
+SCRATCH_TIERS = [
+    {"id":"mat",      "name":"Мать",       "bet":0.20,  "color":"#10b981", "max":14,   "win_chance":0.20,
+     "symbols":[("🍋",1,30),("🍒",2,30),("⭐",5,20),("💎",14,20)]},
+    {"id":"lazur",    "name":"Лазурь",     "bet":0.50,  "color":"#3b82f6", "max":50,   "win_chance":0.15,
+     "symbols":[("🍋",1,44),("🍒",3,40),("⭐",8,8),("💎",50,8)]},
+    {"id":"violet",   "name":"Виолет",     "bet":1.00,  "color":"#a855f7", "max":60,   "win_chance":0.14,
+     "symbols":[("🍋",1,40),("🍒",3,45),("⭐",10,8),("💎",60,7)]},
+    {"id":"sunset",   "name":"Закат",      "bet":2.00,  "color":"#f97316", "max":200,  "win_chance":0.115,
+     "symbols":[("🍋",2,70),("🍒",5,20),("⭐",20,8),("💎",200,2)]},
+    {"id":"gold",     "name":"Золото",     "bet":5.00,  "color":"#fbbf24", "max":300,  "win_chance":0.13,
+     "symbols":[("🍋",2,75),("🍒",6,18),("⭐",30,6),("💎",300,1)]},
+    {"id":"obsidian", "name":"Обисидиан",  "bet":10.00, "color":"#e5e7eb", "max":1000, "win_chance":0.085,
+     "symbols":[("🍋",3,80),("🍒",10,15),("⭐",50,4.5),("💎",1000,0.5)]},
 ]
+SCRATCH_TIER_MAP = {t["id"]: t for t in SCRATCH_TIERS}
 
-def pick_scratch_symbols(ss, cs, nonce):
-    """Возвращает 3 символа для показа + выигрыш."""
-    rng = random.Random(f"{ss}:{cs}:{nonce}")
-    total_w = sum(w for _, _, w in SCRATCH_SYMBOLS)
-    syms = []
-    for _ in range(3):
-        r = rng.random() * total_w
-        acc = 0
-        for emoji, mult, w in SCRATCH_SYMBOLS:
-            acc += w
-            if r < acc:
-                syms.append((emoji, mult))
+def scratch_draw(ss, cs, nonce, tier):
+    symbols = tier["symbols"]
+    win_chance = tier["win_chance"]
+
+    positions = list(range(9))
+    st = int.from_bytes(hashlib.sha256(f"{ss}:{cs}:{nonce}:pos".encode()).digest()[:8], "big")
+    for i in range(8, 0, -1):
+        st = (st * 6364136223846793005 + 1442695040888963407) & ((1 << 64) - 1)
+        j = st % (i + 1)
+        positions[i], positions[j] = positions[j], positions[i]
+
+    roll = pf_rand(ss, cs, nonce * 13 + 1)
+    is_win = roll < win_chance
+
+    if is_win:
+        total_w = sum(w for _, _, w in symbols)
+        pick_roll = pf_rand(ss, cs, nonce * 13 + 2) * total_w
+        cum = 0.0
+        win_sym = symbols[0]
+        for emoji, mult, w in symbols:
+            cum += w
+            if pick_roll < cum:
+                win_sym = (emoji, mult, w)
                 break
-        else:
-            syms.append(SCRATCH_SYMBOLS[0][:2])
-    # win if all three symbols identical
-    if syms[0][0] == syms[1][0] == syms[2][0]:
-        return syms, syms[0][1]
-    return syms, 0
+
+        win_positions = set(positions[:3])
+        others = [s for s in symbols if s[0] != win_sym[0]]
+        others_total = sum(w for _, _, w in others)
+
+        cells = [None] * 9
+        for i in range(9):
+            if i in win_positions:
+                cells[i] = win_sym[0]
+            else:
+                r = pf_rand(ss, cs, nonce * 100 + i) * others_total
+                cum = 0.0
+                pick = others[0][0]
+                for emoji, mult, w in others:
+                    cum += w
+                    if r < cum:
+                        pick = emoji
+                        break
+                cells[i] = pick
+        return cells, float(win_sym[1])
+
+    total_w = sum(w for _, _, w in symbols)
+    for attempt in range(50):
+        cells = []
+        for i in range(9):
+            r = pf_rand(ss, cs, nonce * 1000 + attempt * 100 + i) * total_w
+            cum = 0.0
+            pick = symbols[0][0]
+            for emoji, mult, w in symbols:
+                cum += w
+                if r < cum:
+                    pick = emoji
+                    break
+            cells.append(pick)
+        cnt = Counter(cells)
+        if max(cnt.values()) < 3:
+            return cells, 0.0
+
+    cells = [symbols[i % len(symbols)][0] for i in range(9)]
+    for i in range(8, 0, -1):
+        j = (st + i * 7) % (i + 1)
+        cells[i], cells[j] = cells[j], cells[i]
+    return cells, 0.0
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 BOT_USERNAME: str | None = None
@@ -337,11 +345,9 @@ async def ensure_not_banned(profile):
 
 # ================== ANTIFRAUD ==================
 def get_client_ip(request: Request) -> str:
-    """Извлекает IP из заголовков (Railway/Cloudflare прокси)."""
     for h in ("x-forwarded-for", "x-real-ip", "cf-connecting-ip"):
         v = request.headers.get(h)
-        if v:
-            return v.split(",")[0].strip()
+        if v: return v.split(",")[0].strip()
     return request.client.host if request.client else "0.0.0.0"
 
 async def log_antifraud(uid, event: str, details: dict = None, ip=None, fingerprint=None):
@@ -353,7 +359,6 @@ async def log_antifraud(uid, event: str, details: dict = None, ip=None, fingerpr
         log.exception("log_antifraud failed")
 
 async def antifraud_check(tg_user, ip: str, fingerprint: str):
-    """Проверяет на мульти-аккаунты и обновляет риск-скор."""
     if not ANTIFRAUD_ENABLED: return
     try:
         uid = int(tg_user["id"])
@@ -362,17 +367,12 @@ async def antifraud_check(tg_user, ip: str, fingerprint: str):
         if not r.data: return
         me = r.data[0]
         my_id = me["id"]
-
         updates = {"last_ip": ip}
         if not me.get("device_fingerprint") and fingerprint:
             updates["device_fingerprint"] = fingerprint
-        if not me.get("signup_ip"):
-            updates["signup_ip"] = ip
+        if not me.get("signup_ip"): updates["signup_ip"] = ip
 
-        risk_delta = 0
-        flag_reason = None
-
-        # проверка по fingerprint
+        risk_delta = 0; flag_reason = None
         if fingerprint:
             others = await sb(supabase.table("profiles").select("id, telegram_id")
                               .eq("device_fingerprint", fingerprint).neq("id", my_id))
@@ -386,17 +386,13 @@ async def antifraud_check(tg_user, ip: str, fingerprint: str):
                             "reason": "same_device", "confidence": 80}))
                     except Exception: pass
                 await log_antifraud(my_id, "multi_device", {"count": len(others.data)}, ip, fingerprint)
-
-        # проверка по IP
         if ip:
             others = await sb(supabase.table("profiles").select("id, telegram_id")
                               .eq("last_ip", ip).neq("id", my_id))
             if others.data and len(others.data) >= 3:
                 risk_delta += 20
-                if not flag_reason:
-                    flag_reason = f"IP shared with {len(others.data)} accounts"
+                if not flag_reason: flag_reason = f"IP shared with {len(others.data)} accounts"
                 await log_antifraud(my_id, "multi_ip", {"count": len(others.data)}, ip, fingerprint)
-
         if risk_delta > 0:
             new_score = int(me.get("risk_score") or 0) + risk_delta
             updates["risk_score"] = new_score
@@ -408,10 +404,6 @@ async def antifraud_check(tg_user, ip: str, fingerprint: str):
             await sb(supabase.table("profiles").update(updates).eq("id", my_id))
     except Exception:
         log.exception("antifraud_check failed")
-
-def antifraud_ip_dep(request: Request):
-    """FastAPI dependency: только IP."""
-    return get_client_ip(request)
 
 # ================== SUBSCRIPTION ==================
 async def is_subscribed(user_id: int) -> bool:
@@ -477,10 +469,14 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
 
 async def xrocket_create_invoice(amount, description, client_id, currency="USDT"):
     cur = currency.upper()
+    amt = str(float(amount))
     payload = {
-        "currency": cur, "amount": float(amount),
-        "priceCurrency": cur, "priceAmount": float(amount),
-        "description": description, "clientInvoiceId": client_id,
+        "currency": cur,
+        "amount": amt,
+        "priceCurrency": cur,
+        "priceAmount": amt,
+        "description": description,
+        "clientInvoiceId": client_id,
     }
     data = await xrocket_request("POST", "/api/v1/invoices", payload)
     links = data.get("links") or {}
@@ -491,10 +487,15 @@ async def xrocket_create_invoice(amount, description, client_id, currency="USDT"
 
 async def xrocket_create_payout(user_id, amount, comment, client_id, currency="USDT"):
     cur = currency.upper()
+    amt = str(float(amount))
     payload = {
-        "clientPayoutId": client_id, "target": str(user_id),
-        "targetType": "telegram_user_id", "asset": cur, "amount": str(amount),
-        "priceCurrency": cur, "priceAmount": str(amount),
+        "clientPayoutId": client_id,
+        "target": str(user_id),
+        "targetType": "telegram_user_id",
+        "asset": cur,
+        "amount": amt,
+        "priceCurrency": cur,
+        "priceAmount": amt,
         "description": comment or "Withdraw",
     }
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
@@ -570,7 +571,6 @@ def bj_value(cards):
     return total
 
 def keno_draw(ss, cs, n, count=20):
-    """Возвращает 20 уникальных чисел 1-80."""
     state = int.from_bytes(hashlib.sha256(f"{ss}:{cs}:{n}:keno".encode()).digest()[:8], "big")
     pool = list(range(1, 81))
     for i in range(len(pool) - 1, 0, -1):
@@ -580,7 +580,6 @@ def keno_draw(ss, cs, n, count=20):
     return sorted(pool[:count])
 
 def hilo_deck(ss, cs, n):
-    """Shuffled deck of 52 (values 2-14) для Hi-Lo."""
     state = int.from_bytes(hashlib.sha256(f"{ss}:{cs}:{n}:hilo".encode()).digest()[:8], "big")
     deck = [v for v in HILO_CARDS for _ in range(4)]
     for i in range(len(deck) - 1, 0, -1):
@@ -594,9 +593,7 @@ def validate_init_data(init_data, bot_token):
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
         rh = parsed.pop("hash", None)
-        if not rh:
-            log.error("validate: no hash")
-            return None
+        if not rh: return None
         auth_date_str = parsed.get("auth_date")
         if auth_date_str:
             try:
@@ -608,7 +605,7 @@ def validate_init_data(init_data, bot_token):
         sk = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
         calc = hmac.new(sk, dcs.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calc, rh):
-            log.error("validate: HASH MISMATCH\n  dcs=%r\n  calc=%s\n  recv=%s", dcs, calc, rh)
+            log.error("validate: HASH MISMATCH")
             return None
         u = json.loads(parsed.get("user", "{}"))
         return u if u.get("id") else None
@@ -621,19 +618,14 @@ async def get_current_user(
     x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
     x_device_id: str = Header(None, alias="X-Device-Id"),
 ):
-    if not x_telegram_init_data:
-        raise HTTPException(401, "missing init data")
+    if not x_telegram_init_data: raise HTTPException(401, "missing init data")
     u = validate_init_data(x_telegram_init_data, BOT_TOKEN)
-    if not u:
-        raise HTTPException(401, "invalid init data")
+    if not u: raise HTTPException(401, "invalid init data")
     if not await is_subscribed(int(u["id"])):
         raise HTTPException(403, "subscription_required")
-
-    # antifraud: логируем IP + fingerprint
     if ANTIFRAUD_ENABLED:
         ip = get_client_ip(request)
         asyncio.create_task(antifraud_check(u, ip, x_device_id or ""))
-
     return u
 
 # ================== DB ==================
@@ -915,7 +907,7 @@ def fmt_stats(s, balance, first_name, vip=None):
         base += (f"\n━━━━━━━━━━━━━━━\n<b>{vip['tier_name']}</b>\n"
                  f"Оборот: {vip['total_wagered']:.2f} ₮\n"
                  f"Рейкбек: {vip['rakeback']*100:.1f}%\n"
-                 f"Заработано рейкбека: {vip['rakeback_earned']:.2f} ₮")
+                 f"Заработано: {vip['rakeback_earned']:.2f} ₮")
         if vip["next_tier_name"]:
             left = vip["next_tier_at"] - vip["total_wagered"]
             base += f"\nДо {vip['next_tier_name']}: {left:.2f} ₮"
@@ -1001,22 +993,21 @@ async def cmd_ahelp(message: Message):
     if not admin_only(message): return
     await message.answer(
         "<b>🛠 АДМИН-КОМАНДЫ</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>🎮 Игры</b>\n/astatus · /aon GAME · /aoff GAME · /aonall · /aoffall\n"
-        "Игры: crash,mines,roulette,dice,plinko,blackjack,tower,basket,dart,football,keno,hilo,scratch\n"
-        "<b>👤 Юзеры</b>\n/auser · /afind · /awhois · /agive · /atake · /asetbal\n"
-        "/aban · /aunban · /abanlist · /apause · /aunpause · /anote · /anotes\n"
-        "/aresetnonce · /aresetserver · /asetvip ID TIER · /arak V\n"
-        "<b>🚨 Antifraud</b>\n/arisk ID · /aflag ID REASON · /aunflag ID\n"
-        "/aalts ID · /aantifraud · /asamelist\n"
-        "<b>📊 Статы</b>\n/astats · /aggr · /abalances · /aonline · /arich · /adaily · /aweekly\n"
-        "/agames · /atop · /atopdep · /atopwd · /arp · /avip\n"
-        "<b>💸 Транзы</b>\n/atx · /atxlast · /arefund\n"
-        "<b>🎟 Промо</b>\n/anewpromo CODE SUM [WAGER] [USES] [MAX_BET] [GAMES]\n"
-        "/alistpromos · /adelpromo · /adelallpromos · /apromoinfo · /awager · /aresetwager\n"
-        "/apromogames · /asetbonusgames\n"
-        "<b>📢/⚙️</b>\n/abroadcast · /apush · /asettings · /asetrtp · /asetminbet … /amaintenance\n"
-        "<b>🩺</b>\n/ahealth · /alogs · /aclearlogs · /aadmins",
+        "/astatus /aon GAME /aoff GAME /aonall /aoffall\n"
+        "/aendgame ID [lose] /aendgameall /aactive ID /aactivelist /acleargames\n"
+        "/auser /afind /awhois /agive /atake /asetbal\n"
+        "/aban /aunban /abanlist /apause /aunpause /anote /anotes\n"
+        "/aresetnonce /aresetserver /asetvip ID TIER /arak ID [сумма]\n"
+        "/arisk ID /aflag ID [reason] /aunflag ID /aalts ID /aantifraud /asamelist\n"
+        "/astats /aggr /abalances /aonline /arich /adaily /aweekly /agames\n"
+        "/atop /atopdep /atopwd /arp /avip [ID]\n"
+        "/atx /atxlast /arefund\n"
+        "/anewpromo CODE SUM [WAGER] [USES] [MAX_BET] [GAMES]\n"
+        "/alistpromos /adelpromo /adelallpromos /apromoinfo /awager /aresetwager\n"
+        "/apromogames /asetbonusgames\n"
+        "/abroadcast /apush /asettings /asetrtp /asetminbet /asetmaxbet\n"
+        "/asetmindep /asetminwd /asetmaxwd /asetref /asetcooldown /amaintenance\n"
+        "/ahealth /alogs /aclearlogs /aadmins",
         parse_mode="HTML")
 
 @dp.message(Command("admin"))
@@ -1066,7 +1057,6 @@ async def cmd_aoffall(message: Message):
     for g in GAMES_ENABLED: GAMES_ENABLED[g] = False
     await message.answer("⛔ Все игры выкл")
 
-# ================== VIP ADMIN ==================
 @dp.message(Command("avip"))
 async def cmd_avip(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -1078,18 +1068,14 @@ async def cmd_avip(message: Message, command: CommandObject):
             f"👤 <b>{p['telegram_id']}</b>\n{v['tier_name']} · оборот {v['total_wagered']:.2f}\n"
             f"Рейкбек {v['rakeback']*100:.1f}% · накоплено {v['rakeback_earned']:.2f}\n"
             + (f"До {v['next_tier_name']}: {v['next_tier_at']-v['total_wagered']:.2f}"
-               if v['next_tier_name'] else "Максимум"),
-            parse_mode="HTML")
+               if v['next_tier_name'] else "Максимум"), parse_mode="HTML")
         return
-    # топ по обороту
     r = await sb(supabase.table("profiles").select(
         "telegram_id, first_name, total_wagered, vip_tier").order("total_wagered", desc=True).limit(15))
-    lines = []
-    for i, x in enumerate(r.data or []):
-        lines.append(f"{i+1}. <b>{x.get('first_name') or x['telegram_id']}</b> — "
-                     f"{float(x.get('total_wagered') or 0):.2f} [{x.get('vip_tier')}]")
-    await message.answer("<b>💎 Топ VIP (по обороту)</b>\n" + ("\n".join(lines) if lines else "—"),
-                         parse_mode="HTML")
+    lines = [f"{i+1}. <b>{x.get('first_name') or x['telegram_id']}</b> — "
+             f"{float(x.get('total_wagered') or 0):.2f} [{x.get('vip_tier')}]"
+             for i, x in enumerate(r.data or [])]
+    await message.answer("<b>💎 Топ VIP</b>\n" + ("\n".join(lines) if lines else "—"), parse_mode="HTML")
 
 @dp.message(Command("asetvip"))
 async def cmd_asetvip(message: Message, command: CommandObject):
@@ -1105,7 +1091,6 @@ async def cmd_asetvip(message: Message, command: CommandObject):
 
 @dp.message(Command("arak"))
 async def cmd_arak(message: Message, command: CommandObject):
-    """Начислить рейкбек юзеру: /arak <id> [сумма]"""
     if not admin_only(message): return
     parts = (command.args or "").split()
     if not parts: return await message.answer("/arak <id> [сумма]")
@@ -1125,32 +1110,27 @@ async def cmd_arak(message: Message, command: CommandObject):
         "currency": "USDT", "status": "completed", "meta": {"source": "rakeback"}}))
     await message.answer(f"✅ Рейкбек +{amount:.2f} → {p['telegram_id']}")
 
-# ================== ANTIFRAUD ADMIN ==================
 @dp.message(Command("arisk"))
 async def cmd_arisk(message: Message, command: CommandObject):
     if not admin_only(message): return
     p = await admin_get_user(message, command.args or "")
     if not p: return await message.answer("Не найден")
     await message.answer(
-        f"👤 <code>{p['telegram_id']}</code>\n"
-        f"Risk: <b>{p.get('risk_score', 0)}</b>\n"
+        f"👤 <code>{p['telegram_id']}</code>\nRisk: <b>{p.get('risk_score', 0)}</b>\n"
         f"Flagged: {'🚩 YES' if p.get('auto_flagged') else '✅ no'}\n"
         f"Reason: {p.get('flag_reason') or '—'}\n"
-        f"IP (last): {p.get('last_ip') or '—'}\n"
-        f"IP (signup): {p.get('signup_ip') or '—'}\n"
-        f"Fingerprint: <code>{(p.get('device_fingerprint') or '—')[:24]}</code>",
-        parse_mode="HTML")
+        f"IP (last): {p.get('last_ip') or '—'}\nIP (signup): {p.get('signup_ip') or '—'}\n"
+        f"Fingerprint: <code>{(p.get('device_fingerprint') or '—')[:24]}</code>", parse_mode="HTML")
 
 @dp.message(Command("aflag"))
 async def cmd_aflag(message: Message, command: CommandObject):
     if not admin_only(message): return
     parts = (command.args or "").split(maxsplit=1)
-    if len(parts) < 1: return await message.answer("/aflag <id> [reason]")
+    if not parts: return await message.answer("/aflag <id> [reason]")
     p = await admin_get_user(message, parts[0])
     if not p: return await message.answer("Не найден")
     reason = parts[1] if len(parts) > 1 else "manual flag"
-    await sb(supabase.table("profiles").update({
-        "auto_flagged": True, "flag_reason": reason}).eq("id", p["id"]))
+    await sb(supabase.table("profiles").update({"auto_flagged": True, "flag_reason": reason}).eq("id", p["id"]))
     await log_antifraud(p["id"], "manual_flag", {"reason": reason, "by": message.from_user.id})
     await message.answer(f"🚩 Зафлагован {p['telegram_id']}: {reason}")
 
@@ -1159,8 +1139,7 @@ async def cmd_aunflag(message: Message, command: CommandObject):
     if not admin_only(message): return
     p = await admin_get_user(message, command.args or "")
     if not p: return await message.answer("Не найден")
-    await sb(supabase.table("profiles").update({
-        "auto_flagged": False, "flag_reason": None, "risk_score": 0}).eq("id", p["id"]))
+    await sb(supabase.table("profiles").update({"auto_flagged": False, "flag_reason": None, "risk_score": 0}).eq("id", p["id"]))
     await message.answer(f"✅ Разфлагован {p['telegram_id']}")
 
 @dp.message(Command("aalts"))
@@ -1173,13 +1152,10 @@ async def cmd_aalts(message: Message, command: CommandObject):
     ids = [x["linked_user_id"] for x in r.data]
     prof = await sb(supabase.table("profiles").select("id, telegram_id, first_name").in_("id", ids))
     nm = {x["id"]: x for x in prof.data or []}
-    lines = []
-    for x in r.data:
-        info = nm.get(x["linked_user_id"], {})
-        lines.append(f"• <code>{info.get('telegram_id')}</code> "
-                     f"{info.get('first_name') or ''} — {x['reason']} ({x['confidence']}%)")
-    await message.answer(f"<b>🔗 Связи {p['telegram_id']}</b>\n" + "\n".join(lines),
-                         parse_mode="HTML")
+    lines = [f"• <code>{nm.get(x['linked_user_id'], {}).get('telegram_id')}</code> "
+             f"{nm.get(x['linked_user_id'], {}).get('first_name') or ''} — {x['reason']} ({x['confidence']}%)"
+             for x in r.data]
+    await message.answer(f"<b>🔗 Связи {p['telegram_id']}</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("aantifraud"))
 async def cmd_aantifraud(message: Message):
@@ -1188,8 +1164,7 @@ async def cmd_aantifraud(message: Message):
     r = await sb(supabase.table("antifraud_log").select("*")
                  .gte("created_at", since).order("created_at", desc=True).limit(30))
     if not r.data: return await message.answer("Событий нет")
-    lines = [f"• {x['event']} · {str(x['user_id'])[:8]} · {x['created_at'][:16]}"
-             for x in r.data]
+    lines = [f"• {x['event']} · {str(x['user_id'])[:8]} · {x['created_at'][:16]}" for x in r.data]
     await message.answer("<b>🚨 Antifraud (24ч)</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("asamelist"))
@@ -1204,7 +1179,6 @@ async def cmd_asamelist(message: Message):
              for x in r.data]
     await message.answer("<b>🔗 Мульти-аккаунты</b>\n" + "\n".join(lines), parse_mode="HTML")
 
-# ================== USER STATS / ADMIN (сокращённо) ==================
 @dp.message(Command("aendgame"))
 async def cmd_aendgame(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -1253,8 +1227,7 @@ async def cmd_aactivelist(message: Message):
     if not admin_only(message): return
     r = await sb(supabase.table("active_rounds").select("*").order("started_at", desc=True).limit(30))
     if not r.data: return await message.answer("Нет активных")
-    lines = [f"• {x['game_type']} · {float(x['bet_amount']):.2f} · {str(x['user_id'])[:8]}"
-             for x in r.data]
+    lines = [f"• {x['game_type']} · {float(x['bet_amount']):.2f} · {str(x['user_id'])[:8]}" for x in r.data]
     await message.answer("<b>🎮 Активные</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("acleargames"))
@@ -1268,8 +1241,7 @@ async def cmd_auser(message: Message, command: CommandObject):
     if not admin_only(message): return
     p = await admin_get_user(message, command.args or "")
     if not p: return await message.answer("Не найден")
-    s = await get_user_stats(p["id"])
-    v = vip_info(p)
+    s = await get_user_stats(p["id"]); v = vip_info(p)
     ban = "🚫" if p.get("is_banned") else "✅"
     flag = "🚩" if p.get("auto_flagged") else ""
     await message.answer(
@@ -1352,8 +1324,7 @@ async def cmd_aban(message: Message, command: CommandObject):
     p = await admin_get_user(message, parts[0])
     if not p: return await message.answer("Не найден")
     reason = parts[1] if len(parts) > 1 else "нарушение"
-    await sb(supabase.table("profiles").update(
-        {"is_banned": True, "ban_reason": reason}).eq("id", p["id"]))
+    await sb(supabase.table("profiles").update({"is_banned": True, "ban_reason": reason}).eq("id", p["id"]))
     await message.answer(f"🚫 {p['telegram_id']} забанен: {reason}")
 
 @dp.message(Command("aunban"))
@@ -1361,8 +1332,7 @@ async def cmd_aunban(message: Message, command: CommandObject):
     if not admin_only(message): return
     p = await admin_get_user(message, command.args or "")
     if not p: return await message.answer("Не найден")
-    await sb(supabase.table("profiles").update(
-        {"is_banned": False, "ban_reason": None}).eq("id", p["id"]))
+    await sb(supabase.table("profiles").update({"is_banned": False, "ban_reason": None}).eq("id", p["id"]))
     await message.answer(f"✅ {p['telegram_id']} разбанен")
 
 @dp.message(Command("abanlist"))
@@ -1379,8 +1349,7 @@ async def cmd_apause(message: Message, command: CommandObject):
     if not admin_only(message): return
     p = await admin_get_user(message, command.args or "")
     if not p: return await message.answer("Не найден")
-    await sb(supabase.table("profiles").update(
-        {"is_banned": True, "ban_reason": "paused"}).eq("id", p["id"]))
+    await sb(supabase.table("profiles").update({"is_banned": True, "ban_reason": "paused"}).eq("id", p["id"]))
     await message.answer(f"⏸ {p['telegram_id']}")
 
 @dp.message(Command("aunpause"))
@@ -1388,8 +1357,7 @@ async def cmd_aunpause(message: Message, command: CommandObject):
     if not admin_only(message): return
     p = await admin_get_user(message, command.args or "")
     if not p: return await message.answer("Не найден")
-    await sb(supabase.table("profiles").update(
-        {"is_banned": False, "ban_reason": None}).eq("id", p["id"]))
+    await sb(supabase.table("profiles").update({"is_banned": False, "ban_reason": None}).eq("id", p["id"]))
     await message.answer(f"▶️ {p['telegram_id']}")
 
 @dp.message(Command("anote"))
@@ -1401,8 +1369,7 @@ async def cmd_anote(message: Message, command: CommandObject):
     if not p: return await message.answer("Не найден")
     meta = p.get("admin_notes") or []
     if not isinstance(meta, list): meta = []
-    meta.append({"by": message.from_user.id, "text": parts[1],
-                 "at": datetime.now(timezone.utc).isoformat()})
+    meta.append({"by": message.from_user.id, "text": parts[1], "at": datetime.now(timezone.utc).isoformat()})
     await sb(supabase.table("profiles").update({"admin_notes": meta}).eq("id", p["id"]))
     await message.answer("✅")
 
@@ -1446,8 +1413,7 @@ async def cmd_astats(message: Message):
     await message.answer(
         f"👥 Юзеров: <b>{len(users)}</b>\n💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f}</b>\n"
         f"📥 Депозиты: <b>{dep:.2f}</b>\n📤 Выводы: <b>{wd:.2f}</b>\n"
-        f"🎯 Оборот: <b>{bets:.2f}</b>\n📈 GGR: <b>{ggr:+.2f}</b>\n🎮 Игр: {len(rounds)}",
-        parse_mode="HTML")
+        f"🎯 Оборот: <b>{bets:.2f}</b>\n📈 GGR: <b>{ggr:+.2f}</b>\n🎮 Игр: {len(rounds)}", parse_mode="HTML")
 
 @dp.message(Command("aggr"))
 async def cmd_aggr(message: Message):
@@ -1517,10 +1483,8 @@ async def cmd_agames(message: Message):
         g = r["game_type"]
         a = agg.setdefault(g, {"count": 0, "bets": 0.0, "ggr": 0.0})
         a["count"] += 1; a["bets"] += float(r["bet_amount"]); a["ggr"] -= float(r["profit"])
-    lines = []
-    for g, a in sorted(agg.items(), key=lambda x: -x[1]["ggr"]):
-        rtp = (a["bets"] - a["ggr"]) / a["bets"] * 100 if a["bets"] else 0
-        lines.append(f"<b>{g}</b>: {a['count']} · GGR {a['ggr']:+.2f} · RTP {rtp:.1f}%")
+    lines = [f"<b>{g}</b>: {a['count']} · GGR {a['ggr']:+.2f} · RTP {(a['bets']-a['ggr'])/a['bets']*100 if a['bets'] else 0:.1f}%"
+             for g, a in sorted(agg.items(), key=lambda x: -x[1]["ggr"])]
     await message.answer("<b>🎲 По играм</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("atop"))
@@ -1574,8 +1538,7 @@ async def cmd_arp(message: Message):
     await message.answer(
         f"📊 RTP общий: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
         f"🎲 Dice · 🏀 Basket · 🎯 Dart · ⚽ Football · 💥 Crash · 💎 Mines\n"
-        f"🎡 Roulette · 🃏 BJ · 🎰 Plinko · 🗼 Tower\n"
-        f"🎯 Keno ~95% · 🃏 Hi-Lo ~96% · 🎟 Scratch ~94%",
+        f"🎡 Roulette · 🃏 BJ · 🎰 Plinko · 🗼 Tower · 🎯 Keno · 🃏 Hi-Lo · 🎟 Scratch",
         parse_mode="HTML")
 
 @dp.message(Command("atx"))
@@ -1585,8 +1548,7 @@ async def cmd_atx(message: Message, command: CommandObject):
     if not p: return await message.answer("Не найден")
     r = await sb(supabase.table("transactions").select("*").eq("user_id", p["id"])
                  .order("created_at", desc=True).limit(20))
-    lines = [f"• {x['created_at'][:16]} {x['type']} {float(x['amount']):.2f} {x['status']}"
-             for x in r.data or []]
+    lines = [f"• {x['created_at'][:16]} {x['type']} {float(x['amount']):.2f} {x['status']}" for x in r.data or []]
     await message.answer("<b>💸 Транзы</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("atxlast"))
@@ -1828,8 +1790,7 @@ async def cmd_amaintenance(message: Message, command: CommandObject):
 async def cmd_ahealth(message: Message):
     if not admin_only(message): return
     try:
-        await sb(supabase.table("profiles").select("id").limit(1))
-        sb_st = "✅"
+        await sb(supabase.table("profiles").select("id").limit(1)); sb_st = "✅"
     except Exception as e: sb_st = f"❌ {type(e).__name__}"
     try:
         async with httpx.AsyncClient(timeout=8) as http:
@@ -1972,8 +1933,7 @@ async def cmd_help(message: Message):
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
     p = await get_or_create_profile(message.from_user.model_dump())
-    cur = p.get("preferred_currency") or "USDT"
-    v = vip_info(p)
+    cur = p.get("preferred_currency") or "USDT"; v = vip_info(p)
     bonus = ""
     if p.get("bonus_active"):
         bonus = (f"\n🎰 Бонус: {float(p.get('wager_progress') or 0):.2f}"
@@ -1987,8 +1947,7 @@ async def cmd_balance(message: Message):
 async def cmd_vip(message: Message):
     p = await get_or_create_profile(message.from_user.model_dump())
     v = vip_info(p)
-    txt = (f"👑 <b>VIP-программа</b>\n\n"
-           f"Твой уровень: <b>{v['tier_name']}</b>\n"
+    txt = (f"👑 <b>VIP-программа</b>\n\nТвой уровень: <b>{v['tier_name']}</b>\n"
            f"Оборот: <b>{v['total_wagered']:.2f} ₮</b>\n"
            f"Рейкбек: <b>{v['rakeback']*100:.1f}%</b> (заработано {v['rakeback_earned']:.2f} ₮)\n"
            f"Макс.ставка ×{v['max_bet_mult']:.0f}\n\n")
@@ -2004,8 +1963,7 @@ async def cmd_vip(message: Message):
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
     p = await get_or_create_profile(message.from_user.model_dump())
-    s = await get_user_stats(p["id"])
-    v = vip_info(p)
+    s = await get_user_stats(p["id"]); v = vip_info(p)
     await message.answer(fmt_stats(s, float(p["balance"]), message.from_user.first_name, v),
                          parse_mode="HTML", reply_markup=back_kb())
 
@@ -2094,8 +2052,7 @@ async def cb_pg_custom_bet(cb: CallbackQuery, state: FSMContext):
     if game not in DICE_GAMES: return await cb.answer("Ошибка")
     await state.set_state(PredictionInput.custom_bet)
     await state.update_data(game=game)
-    await cb.message.edit_text(
-        f"✏️ Ставка ({MIN_BET}-{MAX_BET}):",
+    await cb.message.edit_text(f"✏️ Ставка ({MIN_BET}-{MAX_BET}):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️", callback_data=f"pgm:{game}")]]))
 
@@ -2107,8 +2064,7 @@ async def fsm_pg_custom_bet(message: Message, state: FSMContext):
     if not (MIN_BET <= bet <= MAX_BET): return await message.answer(f"❌ {MIN_BET}-{MAX_BET}")
     await state.clear()
     g = DICE_GAMES[game]
-    await message.answer(f"{g['emoji']} · {bet}₮",
-                         reply_markup=pred_type_kb(game, bet))
+    await message.answer(f"{g['emoji']} · {bet}₮", reply_markup=pred_type_kb(game, bet))
 
 @dp.callback_query(F.data.startswith("pgb:"))
 async def cb_pg_bet(cb: CallbackQuery, state: FSMContext):
@@ -2117,8 +2073,7 @@ async def cb_pg_bet(cb: CallbackQuery, state: FSMContext):
     if game not in DICE_GAMES: return await cb.answer("Ошибка")
     bet = float(bet_s)
     g = DICE_GAMES[game]
-    await cb.message.edit_text(f"{g['emoji']} · {bet}₮\nВыбери:",
-                               reply_markup=pred_type_kb(game, bet))
+    await cb.message.edit_text(f"{g['emoji']} · {bet}₮\nВыбери:", reply_markup=pred_type_kb(game, bet))
 
 @dp.callback_query(F.data.startswith("pgn:"))
 async def cb_pg_numbers(cb: CallbackQuery, state: FSMContext):
@@ -2127,8 +2082,7 @@ async def cb_pg_numbers(cb: CallbackQuery, state: FSMContext):
     if game not in DICE_GAMES: return await cb.answer("Ошибка")
     bet = float(bet_s)
     g = DICE_GAMES[game]
-    await cb.message.edit_text(f"{g['emoji']} · {bet}₮\nЧисло:",
-                               reply_markup=pred_number_kb(game, bet))
+    await cb.message.edit_text(f"{g['emoji']} · {bet}₮\nЧисло:", reply_markup=pred_number_kb(game, bet))
 
 @dp.callback_query(F.data.startswith("pgr:"))
 async def cb_pg_run(cb: CallbackQuery, state: FSMContext):
@@ -2177,13 +2131,11 @@ async def cb_pg_run(cb: CallbackQuery, state: FSMContext):
         await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
         await sb(supabase.table("transactions").insert({
             "user_id": p["id"], "type": "win", "amount": profit,
-            "currency": "USDT", "status": "completed",
-            "meta": {"game": game}}))
+            "currency": "USDT", "status": "completed", "meta": {"game": game}}))
     else:
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
 
-    await log_round(p["id"], game, bet,
-                    {"result": result, "pred": ptype, "win": win}, profit, f"tg_{game}", 0)
+    await log_round(p["id"], game, bet, {"result": result, "pred": ptype, "win": win}, profit, f"tg_{game}", 0)
 
     p2 = await get_or_create_profile(cb.from_user.model_dump())
     bal = float(p2["balance"])
@@ -2227,8 +2179,7 @@ async def cb_deposit(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     p = await get_or_create_profile(cb.from_user.model_dump())
     cur = p.get("preferred_currency") or "USDT"
-    await cb.message.edit_text(f"💰 Пополнение ({cur})\nМин: {MIN_DEPOSIT}",
-                               reply_markup=deposit_kb())
+    await cb.message.edit_text(f"💰 Пополнение ({cur})\nМин: {MIN_DEPOSIT}", reply_markup=deposit_kb())
 
 @dp.callback_query(F.data.startswith("dep:"))
 async def cb_dep_amount(cb: CallbackQuery, state: FSMContext):
@@ -2399,6 +2350,8 @@ async def config():
                     "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
                     "plinko": PLINKO_MULTS},
         "dice_predictions": DICE_PREDICTIONS,
+        "scratch_tiers": [{"id":t["id"],"name":t["name"],"bet":t["bet"],
+                           "color":t["color"],"max":t["max"]} for t in SCRATCH_TIERS],
     }
 
 def _profile_sync(user):
@@ -2437,7 +2390,6 @@ async def api_vip(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     return vip_info(p)
 
-# Admin-эндпоинты для промо-конструктора
 def _require_admin(user: dict):
     if not is_admin(int(user["id"])):
         raise HTTPException(403, "admin only")
@@ -2488,7 +2440,6 @@ async def admin_antifraud(user: dict = Depends(get_current_user)):
         .order("risk_score", desc=True).limit(50))
     return r.data or []
 
-# ================== LIVE / LEADERBOARD ==================
 def _live_sync():
     r = supabase.table("game_rounds").select("game_type, profit, bet_amount, profiles(username, first_name)") \
         .gt("profit", 0).order("created_at", desc=True).limit(30).execute()
@@ -2537,7 +2488,6 @@ async def api_referral(user: dict = Depends(get_current_user)):
     info["invited_count"] = len(invited)
     return info
 
-# ================== PROMO USER ==================
 @app.post("/api/promo/redeem")
 async def api_promo_redeem(body: dict, user: dict = Depends(get_current_user)):
     code = (body.get("code") or "").strip().upper()
@@ -2571,7 +2521,6 @@ async def api_promo_redeem(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "amount": amount, "wager_required": wager_required,
             "wager_mult": wager_mult, "allowed_games": allowed}
 
-# ================== DAILY BONUS ==================
 @app.get("/api/bonus/daily")
 async def bonus_status(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -2602,7 +2551,6 @@ async def bonus_claim(user: dict = Depends(get_current_user)):
         {"last_bonus_at": datetime.now(timezone.utc).isoformat()}).eq("id", p["id"]))
     return {"ok": True, "amount": DAILY_BONUS}
 
-# ================== HISTORY / FAIR ==================
 @app.get("/api/history/games")
 async def history_games(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -2630,7 +2578,6 @@ async def fairness(user: dict = Depends(get_current_user)):
                     "created_at": row["created_at"]})
     return out
 
-# ================== PAYMENTS ==================
 @app.post("/api/payments/deposit")
 async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0)); currency = (body.get("currency") or "USDT").upper()
@@ -2923,8 +2870,8 @@ async def bj_stand(user: dict = Depends(get_current_user)):
     else:
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
         asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
-    await log_round(p["id"], "blackjack", bet,
-                    {"win": win, "push": push}, profit, ar["server_seed"], ar["nonce"])
+    await log_round(p["id"], "blackjack", bet, {"win": win, "push": push},
+                    profit, ar["server_seed"], ar["nonce"])
     await clear_active_round(p["id"])
     return {"ok": True, "player": st["player"], "dealer": st["dealer"],
             "player_value": pv, "dealer_value": dv,
@@ -2961,7 +2908,7 @@ async def tower_start(body: dict, user: dict = Depends(get_current_user)):
             return {"ok": True, "resumed": True, "level": st["level"],
                     "mult": tower_mult(st["level"]),
                     "next_mult": tower_mult(st["level"] + 1)}
-        raise HTTPException(400, f"active")
+        raise HTTPException(400, "active")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     positions = tower_step_positions(ss, p["client_seed"], nonce, 6)
     state = {"level": 0, "mine_positions": positions, "bet": bet, "revealed": []}
@@ -3188,8 +3135,7 @@ async def hilo_start(body: dict, user: dict = Depends(get_current_user)):
     await sb(supabase.table("active_rounds").insert({
         "user_id": p["id"], "game_type": "hilo", "bet_amount": bet,
         "state": state, "server_seed": ss, "nonce": nonce}))
-    return {"ok": True, "current": current, "level": 0, "mult": 1.0,
-            "card_names": HILO_NAMES}
+    return {"ok": True, "current": current, "level": 0, "mult": 1.0, "card_names": HILO_NAMES}
 
 @app.post("/api/games/hilo/guess")
 async def hilo_guess(body: dict, user: dict = Depends(get_current_user)):
@@ -3215,7 +3161,6 @@ async def hilo_guess(body: dict, user: dict = Depends(get_current_user)):
         asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
         return {"ok": True, "lost": True, "current": next_card,
                 "profit": -bet, "mult": 0, "card_names": HILO_NAMES}
-    # выиграл раунд — множитель
     remaining = deck
     m = hilo_multiplier(current, direction, remaining + [next_card])
     if m is None: m = HILO_STEP_MULT
@@ -3247,14 +3192,17 @@ async def hilo_cashout(user: dict = Depends(get_current_user)):
 async def scratch_play(body: dict, user: dict = Depends(get_current_user)):
     ensure_game_enabled("scratch")
     if MAINTENANCE: raise HTTPException(503, "maintenance")
-    bet = float(body.get("bet", 0))
+    ticket_id = (body.get("ticket") or "").strip()
+    tier = SCRATCH_TIER_MAP.get(ticket_id)
+    if not tier: raise HTTPException(400, "неизвестный билет")
+    bet = float(tier["bet"])
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, "bet")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
     await check_bonus_max_bet(p, bet); await check_bonus_game(p, "scratch")
     if float(p["balance"]) < bet: raise HTTPException(400, "balance")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    syms, mult = pick_scratch_symbols(ss, p["client_seed"], nonce)
+    cells, mult = scratch_draw(ss, p["client_seed"], nonce, tier)
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
     asyncio.create_task(add_wager(p["id"], bet))
     asyncio.create_task(apply_wager_progress(p["id"], bet))
@@ -3266,8 +3214,8 @@ async def scratch_play(body: dict, user: dict = Depends(get_current_user)):
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
         asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
     await log_round(p["id"], "scratch", bet,
-                    {"symbols": [s[0] for s in syms], "mult": mult},
+                    {"ticket": ticket_id, "cells": cells, "mult": mult},
                     profit, ss, nonce)
-    return {"ok": True,
-            "cells": [s[0] for s in syms],
-            "mult": mult, "payout": payout, "profit": profit}
+    return {"ok": True, "cells": cells, "mult": mult,
+            "payout": payout, "profit": profit,
+            "bet": bet, "ticket": ticket_id}
