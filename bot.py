@@ -43,6 +43,13 @@ ROUL_RB_PAYOUT = round(2 * (1 - HOUSE_EDGE), 4)
 ROUL_DOZEN_PAYOUT = round(3 * (1 - HOUSE_EDGE), 4)
 ROUL_NUM_PAYOUT = round(36 * (1 - HOUSE_EDGE), 4)
 
+RATE_LIMITS = {
+    "bet":      (5, 10),   # 5 ставок за 10 сек
+    "withdraw": (1, 30),   # 1 вывод за 30 сек
+    "deposit":  (1, 5),    # 1 депозит за 5 сек
+}
+SUPPORTED_CURRENCIES = ["USDT", "TON", "BTC", "ETH", "TRX"]
+
 CRASH_BETTING_SEC = 10
 CRASH_COOLDOWN_SEC = 4
 
@@ -73,6 +80,23 @@ async def sb_rpc(name, params):
     return await asyncio.to_thread(lambda: supabase.rpc(name, params).execute())
 
 
+async def check_rate_limit(uid: str, action: str):
+    max_calls, window = RATE_LIMITS.get(action, (10, 60))
+    since = (datetime.now(timezone.utc) - timedelta(seconds=window)).isoformat()
+    r = await sb(supabase.table("action_log").select("id")
+                 .eq("user_id", uid).eq("action", action)
+                 .gte("created_at", since))
+    if len(r.data or []) >= max_calls:
+        raise HTTPException(429, f"слишком часто. Подожди {window} сек.")
+    await sb(supabase.table("action_log").insert({"user_id": uid, "action": action}))
+
+
+async def ensure_not_banned(profile):
+    if profile.get("is_banned"):
+        reason = profile.get("ban_reason") or "нарушение правил"
+        raise HTTPException(403, f"аккаунт заблокирован: {reason}")
+
+
 # =================== xRocket Pay API ===================
 async def xrocket_request(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{XROCKET_API_BASE}{path}"
@@ -95,10 +119,11 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
         return data
 
 
-async def xrocket_create_invoice(amount: float, description: str, req_id: str) -> dict:
+async def xrocket_create_invoice(amount: float, description: str, req_id: str,
+                                  currency: str = "USDT") -> dict:
     payload = {
         "amount": float(amount),
-        "asset": "USDT",
+        "asset": currency,
         "description": description,
         "clientInvoiceId": req_id,
     }
@@ -110,17 +135,18 @@ async def xrocket_create_invoice(amount: float, description: str, req_id: str) -
     return {"id": inv_id, "link": link, "raw": data}
 
 
-async def xrocket_create_payout(user_id: int, amount: float, comment: str, req_id: str) -> dict:
-    """Pay API: только target, asset, amount, description, clientPayoutId."""
+async def xrocket_create_payout(user_id: int, amount: float, comment: str, req_id: str,
+                                 currency: str = "USDT") -> dict:
     payload = {
-        "target": str(user_id),
-        "asset": "USDT",
-        "amount": float(amount),
-        "description": comment,
         "clientPayoutId": req_id,
+        "target": str(user_id),
+        "targetType": "telegram_user_id",
+        "asset": currency,
+        "amount": str(amount),
+        "description": comment,
     }
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
-    payout_id = data.get("id") or data.get("payoutId")
+    payout_id = data.get("payoutId") or data.get("id")
     return {"id": payout_id, "raw": data}
 
 
@@ -187,6 +213,7 @@ async def get_or_create_profile(tg_user):
         "telegram_id": tg_id,
         "username": tg_user.get("username"),
         "first_name": tg_user.get("first_name"),
+        "preferred_currency": "USDT",
     }))
     return ins.data[0]
 
@@ -249,12 +276,14 @@ def referral_info_sync(profile):
 
 
 # =================== payments ===================
-async def create_deposit_invoice(profile, amount):
+async def create_deposit_invoice(profile, amount, currency="USDT"):
+    if currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(400, "неподдерживаемая валюта")
     cid = f"dep_{profile['id'][:8]}_{int(time.time())}"
-    inv = await xrocket_create_invoice(amount, "GoldCash deposit", cid)
+    inv = await xrocket_create_invoice(amount, "GoldCash deposit", cid, currency)
     await sb(supabase.table("transactions").insert({
         "user_id": profile["id"], "type": "deposit", "amount": amount,
-        "currency": "USDT", "external_id": cid, "status": "pending",
+        "currency": currency, "external_id": cid, "status": "pending",
         "meta": {"invoice_id": inv.get("id")},
     }))
     return {"link": inv["link"], "invoice_id": inv.get("id"), "cid": cid}
@@ -266,7 +295,9 @@ async def daily_withdrawn(uid):
                  .gte("created_at", since))
     return sum(float(x["amount"]) for x in r.data or [])
 
-async def do_withdraw(profile, tg_id, amount):
+async def do_withdraw(profile, tg_id, amount, currency="USDT"):
+    if currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(400, "неподдерживаемая валюта")
     last = await sb(supabase.table("transactions").select("created_at")
                     .eq("user_id", profile["id"]).eq("type", "deposit").eq("status", "completed")
                     .order("created_at", desc=True).limit(1))
@@ -283,14 +314,14 @@ async def do_withdraw(profile, tg_id, amount):
     spent = await daily_withdrawn(profile["id"])
     if spent + amount > MAX_WITHDRAW_DAILY:
         left = MAX_WITHDRAW_DAILY - spent
-        raise HTTPException(400, f"дневной лимит вывода. Осталось {max(0, left):.2f} ₮")
+        raise HTTPException(400, f"дневной лимит вывода. Осталось {max(0, left):.2f}")
 
     cid = f"wd_{profile['id'][:8]}_{int(time.time())}"
-    payout = await xrocket_create_payout(tg_id, amount, "GoldCash withdraw", cid)
+    payout = await xrocket_create_payout(tg_id, amount, "GoldCash withdraw", cid, currency)
     await sb_rpc("change_balance", {"p_user_id": profile["id"], "p_delta": -amount})
     await sb(supabase.table("transactions").insert({
         "user_id": profile["id"], "type": "withdraw", "amount": amount,
-        "currency": "USDT", "external_id": cid, "status": "completed",
+        "currency": currency, "external_id": cid, "status": "completed",
         "meta": {"payout_id": payout.get("id")},
     }))
     return payout
@@ -364,14 +395,14 @@ def back_kb():
 def fmt_stats(s, balance, first_name):
     return (
         f"👤 <b>{first_name or 'игрок'}</b>\n\n"
-        f"💎 <b>Баланс:</b> {balance:.2f} ₮\n"
+        f"💎 <b>Баланс:</b> {balance:.2f}\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📥 Пополнено: <b>{s['deposits']:.2f} ₮</b>\n"
-        f"📤 Выведено: <b>{s['withdrawals']:.2f} ₮</b>\n"
-        f"🎯 Ставок: <b>{s['bets']:.2f} ₮</b>\n"
-        f"🏆 Выигрышей: <b>{s['wins']:.2f} ₮</b>\n"
+        f"📥 Пополнено: <b>{s['deposits']:.2f}</b>\n"
+        f"📤 Выведено: <b>{s['withdrawals']:.2f}</b>\n"
+        f"🎯 Ставок: <b>{s['bets']:.2f}</b>\n"
+        f"🏆 Выигрышей: <b>{s['wins']:.2f}</b>\n"
         f"🎮 Игр: <b>{s['games']}</b>\n"
-        f"📊 Профит: <b>{s['net']:+.2f} ₮</b>"
+        f"📊 Профит: <b>{s['net']:+.2f}</b>"
     )
 
 
@@ -393,10 +424,39 @@ async def cmd_admin(message: Message):
         f"━━━━━━━━━━━━━━━\n"
         f"/astats · /arp · /auser &lt;id&gt;\n"
         f"/agive &lt;id&gt; &lt;sum&gt; · /atake &lt;id&gt; &lt;sum&gt;\n"
+        f"/aban &lt;id&gt; [reason] · /aunban &lt;id&gt;\n"
         f"/abroadcast &lt;text&gt;\n"
         f"/anewpromo &lt;code&gt; &lt;amount&gt; [max]\n"
         f"/alistpromos · /adelpromo &lt;code&gt;",
         parse_mode="HTML")
+
+@dp.message(Command("aban"))
+async def cmd_aban(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/aban <tg_id> [причина]")
+    parts = command.args.split(maxsplit=1)
+    try: tg_id = int(parts[0])
+    except: return await message.answer("tg_id числом")
+    reason = parts[1] if len(parts) > 1 else "нарушение правил"
+    p = await get_profile_by_tg(tg_id)
+    if not p: return await message.answer("Юзер не найден")
+    await sb(supabase.table("profiles").update({
+        "is_banned": True, "ban_reason": reason}).eq("id", p["id"]))
+    await message.answer(f"🚫 <code>{tg_id}</code> забанен: {reason}", parse_mode="HTML")
+    try: await bot.send_message(tg_id, f"🚫 Твой аккаунт заблокирован: {reason}")
+    except: pass
+
+@dp.message(Command("aunban"))
+async def cmd_aunban(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/aunban <tg_id>")
+    try: tg_id = int(command.args.strip())
+    except: return await message.answer("tg_id числом")
+    p = await get_profile_by_tg(tg_id)
+    if not p: return await message.answer("Юзер не найден")
+    await sb(supabase.table("profiles").update({
+        "is_banned": False, "ban_reason": None}).eq("id", p["id"]))
+    await message.answer(f"✅ <code>{tg_id}</code> разбанен", parse_mode="HTML")
 
 @dp.message(Command("arp"))
 async def cmd_arp(message: Message):
@@ -428,15 +488,15 @@ async def cmd_astats(message: Message):
             by_game.setdefault(g, {"bets": 0, "count": 0})
             by_game[g]["bets"] += float(r["bet_amount"])
             by_game[g]["count"] += 1
-        games_text = "\n".join(f"   • {g}: {v['count']} игр, оборот {v['bets']:.2f} ₮"
+        games_text = "\n".join(f"   • {g}: {v['count']} игр, оборот {v['bets']:.2f}"
                               for g, v in by_game.items()) or "   нет"
         await message.answer(
             f"👥 Юзеров: <b>{len(users)}</b>\n"
-            f"💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f} ₮</b>\n"
-            f"📥 Депозиты: <b>{dep:.2f} ₮</b>\n"
-            f"📤 Выводы: <b>{wd:.2f} ₮</b>\n"
-            f"🎯 Оборот: <b>{total_bets:.2f} ₮</b>\n"
-            f"📈 GGR: <b>{ggr:+.2f} ₮</b>\n"
+            f"💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f}</b>\n"
+            f"📥 Депозиты: <b>{dep:.2f}</b>\n"
+            f"📤 Выводы: <b>{wd:.2f}</b>\n"
+            f"🎯 Оборот: <b>{total_bets:.2f}</b>\n"
+            f"📈 GGR: <b>{ggr:+.2f}</b>\n"
             f"━━━━━━━━━━━━━━━\n{games_text}",
             parse_mode="HTML")
     except Exception as e:
@@ -451,14 +511,16 @@ async def cmd_auser(message: Message, command: CommandObject):
     p = await get_profile_by_tg(tg_id)
     if not p: return await message.answer("Юзер не найден")
     s = await get_user_stats(p["id"])
+    ban = "🚫 ЗАБАНЕН" if p.get("is_banned") else "✅ активен"
     await message.answer(
         f"👤 <b>{p.get('first_name') or '—'}</b> @{p.get('username') or '—'}\n"
         f"🆔 <code>{p['telegram_id']}</code>\n"
-        f"💎 <b>{float(p['balance']):.2f} ₮</b>\n"
+        f"💎 <b>{float(p['balance']):.2f}</b>\n"
+        f"Статус: {ban}\n"
         f"📥 {s['deposits']:.2f} · 📤 {s['withdrawals']:.2f}\n"
         f"🎯 {s['bets']:.2f} · 🏆 {s['wins']:.2f}\n"
         f"🎮 {s['games']} · 📊 {s['net']:+.2f}\n"
-        f"👥 реф: {float(p.get('ref_earnings') or 0):.2f} ₮",
+        f"👥 реф: {float(p.get('ref_earnings') or 0):.2f}",
         parse_mode="HTML")
 
 @dp.message(Command("agive"))
@@ -476,10 +538,9 @@ async def cmd_agive(message: Message, command: CommandObject):
     await sb(supabase.table("transactions").insert({
         "user_id": p["id"], "type": "admin", "amount": amount,
         "currency": "USDT", "status": "completed",
-        "meta": {"by": message.from_user.id, "action": "give"},
-    }))
-    await message.answer(f"✅ +<b>{amount} ₮</b> → <code>{tg_id}</code>", parse_mode="HTML")
-    try: await bot.send_message(tg_id, f"💎 +<b>{amount} ₮</b>", parse_mode="HTML")
+        "meta": {"by": message.from_user.id, "action": "give"}}))
+    await message.answer(f"✅ +<b>{amount}</b> → <code>{tg_id}</code>", parse_mode="HTML")
+    try: await bot.send_message(tg_id, f"💎 +<b>{amount}</b>", parse_mode="HTML")
     except: pass
 
 @dp.message(Command("atake"))
@@ -494,21 +555,20 @@ async def cmd_atake(message: Message, command: CommandObject):
     p = await get_profile_by_tg(tg_id)
     if not p: return await message.answer("Юзер не найден")
     if float(p["balance"]) < amount:
-        return await message.answer(f"У юзера только {float(p['balance']):.2f} ₮")
+        return await message.answer(f"У юзера только {float(p['balance']):.2f}")
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -amount})
     await sb(supabase.table("transactions").insert({
         "user_id": p["id"], "type": "admin", "amount": amount,
         "currency": "USDT", "status": "completed",
-        "meta": {"by": message.from_user.id, "action": "take"},
-    }))
-    await message.answer(f"✅ −<b>{amount} ₮</b> у <code>{tg_id}</code>", parse_mode="HTML")
+        "meta": {"by": message.from_user.id, "action": "take"}}))
+    await message.answer(f"✅ −<b>{amount}</b> у <code>{tg_id}</code>", parse_mode="HTML")
 
 @dp.message(Command("abroadcast"))
 async def cmd_abroadcast(message: Message, command: CommandObject, state: FSMContext):
     if not admin_only(message): return
     if not command.args:
         await state.set_state(AdminInput.broadcast)
-        return await message.answer("✍️ Отправь текст для рассылки (или /cancel)")
+        return await message.answer("✍️ Отправь текст (или /cancel)")
     await do_broadcast(message, command.args)
 
 @dp.message(Command("cancel"))
@@ -554,7 +614,7 @@ async def cmd_anewpromo(message: Message, command: CommandObject):
         await sb(supabase.table("promo_codes").insert({
             "code": code, "amount": amount, "max_uses": max_uses,
             "created_by": message.from_user.id}))
-        await message.answer(f"✅ <code>{code}</code> · {amount} ₮ · {'∞' if not max_uses else max_uses}", parse_mode="HTML")
+        await message.answer(f"✅ <code>{code}</code> · {amount} · {'∞' if not max_uses else max_uses}", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ {e}")
 
@@ -566,7 +626,7 @@ async def cmd_alistpromos(message: Message):
     lines = []
     for p in r.data:
         uses = f"{p['uses']}/{p['max_uses']}" if p['max_uses'] else f"{p['uses']}/∞"
-        lines.append(f"• <code>{p['code']}</code> — {float(p['amount']):.2f} ₮ · {uses}")
+        lines.append(f"• <code>{p['code']}</code> — {float(p['amount']):.2f} · {uses}")
     await message.answer("<b>Промокоды:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("adelpromo"))
@@ -597,15 +657,17 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
                 except: pass
     p = await get_or_create_profile(message.from_user.model_dump())
     extra = "\n\n🔐 <i>У тебя есть /admin</i>" if is_admin(message.from_user.id) else ""
+    cur = p.get("preferred_currency") or "USDT"
     await message.answer(
         f"Привет, {message.from_user.first_name}! 👋\n\n"
-        f"💎 Баланс: <b>{float(p['balance']):.2f} ₮</b>{extra}",
+        f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>{extra}",
         reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
     p = await get_or_create_profile(message.from_user.model_dump())
-    await message.answer(f"💎 Баланс: <b>{float(p['balance']):.2f} ₮</b>",
+    cur = p.get("preferred_currency") or "USDT"
+    await message.answer(f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>",
                          parse_mode="HTML", reply_markup=back_kb())
 
 @dp.message(Command("stats"))
@@ -628,38 +690,52 @@ async def cmd_dice(message: Message):
 async def cmd_deposit(message: Message, command: CommandObject):
     try: amount = float(command.args)
     except: return await message.answer(f"Использование: /deposit 1 (мин {MIN_DEPOSIT})")
-    if amount < MIN_DEPOSIT: return await message.answer(f"Минимум {MIN_DEPOSIT} USDT")
+    if amount < MIN_DEPOSIT: return await message.answer(f"Минимум {MIN_DEPOSIT}")
     p = await get_or_create_profile(message.from_user.model_dump())
-    try: inv = await create_deposit_invoice(p, amount)
+    cur = p.get("preferred_currency") or "USDT"
+    try: inv = await create_deposit_invoice(p, amount, cur)
     except Exception as e: return await message.answer(f"❌ {e}")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])]])
-    await message.answer(f"💰 Счёт на <b>{amount} USDT</b>.", parse_mode="HTML", reply_markup=kb)
+    await message.answer(f"💰 Счёт на <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=kb)
 
 @dp.message(Command("withdraw"))
 async def cmd_withdraw(message: Message, command: CommandObject):
     p = await get_or_create_profile(message.from_user.model_dump())
+    cur = p.get("preferred_currency") or "USDT"
     if not command.args:
         return await message.answer(
             f"💸 <b>Вывод</b>\n"
-            f"Баланс: <b>{float(p['balance']):.2f} ₮</b>\n"
-            f"Минимум: {MIN_WITHDRAW} ₮\n\n"
-            f"<b>⚠️ Важно:</b> средства приходят на твой аккаунт <b>@xRocket</b>. "
-            f"Если ты ещё не зарегистрирован — сначала зайди в @xRocket, иначе выплата не дойдёт.\n\n"
+            f"Баланс: <b>{float(p['balance']):.2f} {cur}</b>\n"
+            f"Минимум: {MIN_WITHDRAW}\n\n"
+            f"<b>⚠️ Средства придут на @xRocket.</b>\n\n"
             f"Использование: /withdraw 5",
             parse_mode="HTML", reply_markup=back_kb())
     try: amount = float(command.args.replace(",", ".").strip())
     except: return await message.answer("Использование: /withdraw 5")
     if amount < MIN_WITHDRAW:
-        return await message.answer(f"❌ Минимум {MIN_WITHDRAW} USDT")
+        return await message.answer(f"❌ Минимум {MIN_WITHDRAW}")
     if float(p["balance"]) < amount:
-        return await message.answer(f"❌ Недостаточно. Баланс: <b>{float(p['balance']):.2f} ₮</b>", parse_mode="HTML")
+        return await message.answer(f"❌ Недостаточно. Баланс: <b>{float(p['balance']):.2f}</b>", parse_mode="HTML")
     msg = await message.answer("⏳ Обработка…")
-    try: await do_withdraw(p, message.from_user.id, amount)
+    try: await do_withdraw(p, message.from_user.id, amount, cur)
     except HTTPException as e: return await msg.edit_text(f"❌ {e.detail}")
     except Exception as e:
         log.exception("payout failed")
         return await msg.edit_text(f"❌ {e}")
-    await msg.edit_text(f"✅ Выплата <b>{amount} ₮</b> отправлена.", parse_mode="HTML")
+    await msg.edit_text(f"✅ Выплата <b>{amount} {cur}</b> отправлена.", parse_mode="HTML")
+
+@dp.message(Command("currency"))
+async def cmd_currency(message: Message, command: CommandObject):
+    if not command.args:
+        return await message.answer(
+            f"Доступные валюты: {', '.join(SUPPORTED_CURRENCIES)}\n"
+            f"Использование: /currency TON")
+    cur = command.args.strip().upper()
+    if cur not in SUPPORTED_CURRENCIES:
+        return await message.answer("❌ Неподдерживаемая валюта")
+    p = await get_or_create_profile(message.from_user.model_dump())
+    await sb(supabase.table("profiles").update({"preferred_currency": cur}).eq("id", p["id"]))
+    await message.answer(f"✅ Валюта: <b>{cur}</b>", parse_mode="HTML", reply_markup=back_kb())
 
 
 async def try_redeem_promo(message: Message, code: str):
@@ -679,7 +755,7 @@ async def try_redeem_promo(message: Message, code: str):
         "user_id": p["id"], "type": "bonus", "amount": amount,
         "currency": "USDT", "status": "completed",
         "meta": {"source": "promo", "code": code}}))
-    await message.answer(f"✅ +<b>{amount} ₮</b>", parse_mode="HTML")
+    await message.answer(f"✅ +<b>{amount}</b>", parse_mode="HTML")
 
 
 # =================== MENUS ===================
@@ -711,7 +787,8 @@ async def cb_menu(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "menu:balance")
 async def cb_balance(cb: CallbackQuery):
     p = await get_or_create_profile(cb.from_user.model_dump())
-    await cb.message.edit_text(f"💎 <b>{float(p['balance']):.2f} ₮</b>", parse_mode="HTML", reply_markup=back_kb())
+    cur = p.get("preferred_currency") or "USDT"
+    await cb.message.edit_text(f"💎 <b>{float(p['balance']):.2f} {cur}</b>", parse_mode="HTML", reply_markup=back_kb())
 
 @dp.callback_query(F.data == "menu:stats")
 async def cb_stats(cb: CallbackQuery):
@@ -723,28 +800,31 @@ async def cb_stats(cb: CallbackQuery):
 @dp.callback_query(F.data == "menu:deposit")
 async def cb_deposit(cb: CallbackQuery, state: FSMContext):
     await state.clear()
+    p = await get_or_create_profile(cb.from_user.model_dump())
+    cur = p.get("preferred_currency") or "USDT"
     await cb.message.edit_text(
-        f"💰 <b>Пополнение</b>\nВыбери сумму (мин. {MIN_DEPOSIT}):",
+        f"💰 <b>Пополнение</b>\nВалюта: <b>{cur}</b> (смени через /currency)\nВыбери сумму (мин. {MIN_DEPOSIT}):",
         parse_mode="HTML", reply_markup=deposit_kb())
 
 @dp.callback_query(F.data.startswith("dep:"))
 async def cb_dep_amount(cb: CallbackQuery, state: FSMContext):
     val = cb.data.split(":")[1]
+    p = await get_or_create_profile(cb.from_user.model_dump())
+    cur = p.get("preferred_currency") or "USDT"
     if val == "custom":
         await state.set_state(AmountInput.deposit)
         await cb.message.edit_text(
-            f"💰 Введи сумму в USDT (мин. {MIN_DEPOSIT}).\nОтмена — /start",
+            f"💰 Введи сумму в {cur} (мин. {MIN_DEPOSIT}).\nОтмена — /start",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:deposit")]]))
         return
     amount = float(val)
-    p = await get_or_create_profile(cb.from_user.model_dump())
-    try: inv = await create_deposit_invoice(p, amount)
+    try: inv = await create_deposit_invoice(p, amount, cur)
     except Exception as e: return await cb.answer(f"❌ {e}", show_alert=True)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])],
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
-    await cb.message.edit_text(f"💰 Счёт на <b>{amount} USDT</b>.", parse_mode="HTML", reply_markup=kb)
+    await cb.message.edit_text(f"💰 Счёт на <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(F.data == "menu:withdraw")
 async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
@@ -754,18 +834,18 @@ async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
 
 async def cb_withdraw_dispatch(cb, p):
     bal = float(p["balance"])
+    cur = p.get("preferred_currency") or "USDT"
     spent = await daily_withdrawn(p["id"])
     left = MAX_WITHDRAW_DAILY - spent
     hint = ""
     if bal < MIN_WITHDRAW:
-        hint = f"\n\n⚠️ На балансе {bal:.2f} ₮, минимум для вывода {MIN_WITHDRAW} ₮."
+        hint = f"\n\n⚠️ Баланс {bal:.2f}, минимум {MIN_WITHDRAW}."
     await cb.message.edit_text(
-        f"💸 <b>Вывод</b>\n"
-        f"Баланс: <b>{bal:.2f} ₮</b>\n"
-        f"Лимит/сутки: <b>{max(0,left):.2f} ₮</b> из {MAX_WITHDRAW_DAILY:.0f} ₮\n"
-        f"Минимум: {MIN_WITHDRAW} ₮{hint}\n\n"
-        f"<b>⚠️ Важно:</b> средства приходят на твой аккаунт <b>@xRocket</b>. "
-        f"Если ты ещё не зарегистрирован в xRocket — сначала зайди туда, иначе выплата не дойдёт.\n\n"
+        f"💸 <b>Вывод в {cur}</b>\n"
+        f"Баланс: <b>{bal:.2f}</b>\n"
+        f"Лимит/сутки: <b>{max(0,left):.2f}</b> из {MAX_WITHDRAW_DAILY:.0f}\n"
+        f"Минимум: {MIN_WITHDRAW}{hint}\n\n"
+        f"<b>⚠️ Средства приходят на твой аккаунт @xRocket.</b>\n\n"
         f"Выбери сумму или «Своя сумма»:",
         parse_mode="HTML", reply_markup=withdraw_kb(bal))
 
@@ -773,11 +853,12 @@ async def cb_withdraw_dispatch(cb, p):
 async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
     val = cb.data.split(":")[1]
     p = await get_or_create_profile(cb.from_user.model_dump())
+    cur = p.get("preferred_currency") or "USDT"
     if val == "custom":
         await state.set_state(AmountInput.withdraw)
         await cb.message.edit_text(
-            f"💸 Введи сумму вывода (мин. {MIN_WITHDRAW}).\n"
-            f"Баланс: <b>{float(p['balance']):.2f} ₮</b>\n\n"
+            f"💸 Введи сумму вывода в {cur} (мин. {MIN_WITHDRAW}).\n"
+            f"Баланс: <b>{float(p['balance']):.2f}</b>\n\n"
             f"<b>⚠️ Средства придут на @xRocket.</b>\nОтмена — /start",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -785,16 +866,16 @@ async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
         return
     amount = float(val)
     if amount < MIN_WITHDRAW:
-        return await cb.answer(f"Минимум {MIN_WITHDRAW} USDT", show_alert=True)
+        return await cb.answer(f"Минимум {MIN_WITHDRAW}", show_alert=True)
     if float(p["balance"]) < amount:
         return await cb.answer("Недостаточно средств", show_alert=True)
     await cb.message.edit_text("⏳ Обработка…", reply_markup=back_kb())
-    try: await do_withdraw(p, cb.from_user.id, amount)
+    try: await do_withdraw(p, cb.from_user.id, amount, cur)
     except HTTPException as e: return await cb.message.edit_text(f"❌ {e.detail}", reply_markup=back_kb())
     except Exception as e:
         log.exception("payout failed")
         return await cb.message.edit_text(f"❌ {e}", reply_markup=back_kb())
-    await cb.message.edit_text(f"✅ Выплата <b>{amount} ₮</b> отправлена.", parse_mode="HTML", reply_markup=back_kb())
+    await cb.message.edit_text(f"✅ Выплата <b>{amount} {cur}</b> отправлена.", parse_mode="HTML", reply_markup=back_kb())
 
 
 # =================== FSM ===================
@@ -806,31 +887,33 @@ async def fsm_deposit_amount(message: Message, state: FSMContext):
     if amount > MAX_DEPOSIT: return await message.answer(f"❌ Макс {MAX_DEPOSIT}")
     await state.clear()
     p = await get_or_create_profile(message.from_user.model_dump())
-    try: inv = await create_deposit_invoice(p, amount)
+    cur = p.get("preferred_currency") or "USDT"
+    try: inv = await create_deposit_invoice(p, amount, cur)
     except Exception as e:
         log.exception("create_invoice failed")
         return await message.answer(f"❌ {e}", reply_markup=back_kb())
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])],
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
-    await message.answer(f"💰 Счёт на <b>{amount} USDT</b>.", parse_mode="HTML", reply_markup=kb)
+    await message.answer(f"💰 Счёт на <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=kb)
 
 @dp.message(AmountInput.withdraw)
 async def fsm_withdraw_amount(message: Message, state: FSMContext):
     try: amount = float(message.text.replace(",", ".").strip())
     except: return await message.answer("❌ Не число.")
     p = await get_or_create_profile(message.from_user.model_dump())
+    cur = p.get("preferred_currency") or "USDT"
     if amount < MIN_WITHDRAW: return await message.answer(f"❌ Минимум {MIN_WITHDRAW}")
     if float(p["balance"]) < amount:
-        return await message.answer(f"❌ Недостаточно. Баланс: <b>{float(p['balance']):.2f} ₮</b>", parse_mode="HTML")
+        return await message.answer(f"❌ Недостаточно. Баланс: <b>{float(p['balance']):.2f}</b>", parse_mode="HTML")
     await state.clear()
     msg = await message.answer("⏳ Обработка…")
-    try: await do_withdraw(p, message.from_user.id, amount)
+    try: await do_withdraw(p, message.from_user.id, amount, cur)
     except HTTPException as e: return await msg.edit_text(f"❌ {e.detail}", reply_markup=back_kb())
     except Exception as e:
         log.exception("payout failed")
         return await msg.edit_text(f"❌ {e}", reply_markup=back_kb())
-    await msg.edit_text(f"✅ Выплата <b>{amount} ₮</b> отправлена.", parse_mode="HTML", reply_markup=back_kb())
+    await msg.edit_text(f"✅ Выплата <b>{amount} {cur}</b> отправлена.", parse_mode="HTML", reply_markup=back_kb())
 
 
 # =================== DICE ===================
@@ -860,7 +943,7 @@ async def cb_dice_bet(cb: CallbackQuery):
     p = await get_or_create_profile(cb.from_user.model_dump())
     if float(p["balance"]) < bet:
         return await cb.answer("Недостаточно средств", show_alert=True)
-    await cb.message.edit_text(f"🎲 Ставка <b>{bet} ₮</b>. Выбери число:",
+    await cb.message.edit_text(f"🎲 Ставка <b>{bet}</b>. Выбери число:",
                                parse_mode="HTML", reply_markup=dice_num_kb(bet))
 
 @dp.callback_query(F.data.startswith("dnum:"))
@@ -886,14 +969,14 @@ async def cb_dice_num(cb: CallbackQuery):
         await sb(supabase.table("transactions").insert({
             "user_id": p["id"], "type": "win", "amount": profit,
             "currency": "USDT", "status": "completed", "meta": {"game": "dice"}}))
-        text = f"🎲 <b>{result}</b> · твоё {num}\n✅ +{profit:.2f} ₮ (×{DICE_PAYOUT})"
+        text = f"🎲 <b>{result}</b> · твоё {num}\n✅ +{profit:.2f} (×{DICE_PAYOUT})"
     else:
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-        text = f"🎲 <b>{result}</b> · твоё {num}\n❌ −{bet:.2f} ₮"
+        text = f"🎲 <b>{result}</b> · твоё {num}\n❌ −{bet:.2f}"
     await log_round(p["id"], "dice", bet, {"result": result, "chosen": num, "win": win},
                     profit, "telegram_dice", 0)
     p2 = await get_or_create_profile(cb.from_user.model_dump())
-    text += f"\n\n💎 <b>{float(p2['balance']):.2f} ₮</b>"
+    text += f"\n\n💎 <b>{float(p2['balance']):.2f}</b>"
     again_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎲 Ещё раз", callback_data=f"dice_bet:{bet}")],
         [InlineKeyboardButton(text="💰 Пополнить", callback_data="menu:deposit"),
@@ -911,10 +994,10 @@ async def cb_ref_menu(cb: CallbackQuery):
                         .eq("referrer_id", p["id"]).order("created_at", desc=True).limit(50))).data or []
     text = (
         f"👥 <b>Приглашай друзей</b>\n\n"
-        f"<b>{REFERRAL_SHARE*100:.0f}%</b> от проигрыша каждого друга!\n\n"
+        f"<b>{REFERRAL_SHARE*100:.0f}%</b> от проигрыша каждого!\n\n"
         f"👤 Приглашено: <b>{len(invited)}</b>\n"
-        f"💰 Заработано: <b>{float(p.get('ref_earnings') or 0):.2f} ₮</b>\n\n"
-        f"Твоя ссылка:\n<code>{info['link']}</code>"
+        f"💰 Заработано: <b>{float(p.get('ref_earnings') or 0):.2f}</b>\n\n"
+        f"Ссылка:\n<code>{info['link']}</code>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Поделиться", url=share_url)],
@@ -928,8 +1011,8 @@ async def lifespan(app):
     global BOT_USERNAME
     me = await bot.get_me()
     BOT_USERNAME = me.username
-    log.info("start · house_edge=%.3f · admins=%s · bot=@%s · xrocket=%s",
-             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, XROCKET_API_BASE)
+    log.info("start · house_edge=%.3f · admins=%s · bot=@%s",
+             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME)
     task_bot = asyncio.create_task(dp.start_polling(bot))
     task_crash = asyncio.create_task(crash_loop())
     yield
@@ -955,6 +1038,7 @@ async def config():
         "withdraw_cooldown_min": WITHDRAW_COOLDOWN_MIN,
         "max_withdraw_daily": MAX_WITHDRAW_DAILY,
         "referral_share": REFERRAL_SHARE,
+        "currencies": SUPPORTED_CURRENCIES,
         "rtp": round(1 - HOUSE_EDGE, 4),
         "payouts": {
             "dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
@@ -972,7 +1056,7 @@ def _profile_sync(user):
     r = supabase.table("profiles").select("*").eq("telegram_id", tg_id).execute()
     p = r.data[0] if r.data else supabase.table("profiles").insert({
         "telegram_id": tg_id, "username": user.get("username"),
-        "first_name": user.get("first_name"),
+        "first_name": user.get("first_name"), "preferred_currency": "USDT",
     }).execute().data[0]
     try:
         tx = supabase.table("transactions").select("type, amount, status").eq("user_id", p["id"]).execute().data or []
@@ -990,6 +1074,8 @@ def _profile_sync(user):
         "client_seed": p.get("client_seed") or "",
         "nonce": int(p.get("nonce") or 0),
         "ref_earnings": float(p.get("ref_earnings") or 0),
+        "preferred_currency": p.get("preferred_currency") or "USDT",
+        "is_banned": bool(p.get("is_banned")),
         "stats": {
             "total_games": len(rounds), "total_wagered": round(bets, 2),
             "total_profit": round(wins - bets, 2), "best_mult": 1.0,
@@ -1005,6 +1091,15 @@ async def profile(user: dict = Depends(get_current_user)):
     except Exception:
         log.exception("profile endpoint failed")
         raise HTTPException(500, "profile error")
+
+@app.post("/api/profile/currency")
+async def set_currency(body: dict, user: dict = Depends(get_current_user)):
+    currency = (body.get("currency") or "").upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(400, "неподдерживаемая валюта")
+    p = await get_or_create_profile(user)
+    await sb(supabase.table("profiles").update({"preferred_currency": currency}).eq("id", p["id"]))
+    return {"ok": True, "currency": currency}
 
 
 def _live_sync():
@@ -1133,9 +1228,13 @@ async def fairness_verify(round_id: str, user: dict = Depends(get_current_user))
 @app.post("/api/payments/deposit")
 async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0))
+    currency = (body.get("currency") or "USDT").upper()
     if amount < MIN_DEPOSIT: raise HTTPException(400, f"min {MIN_DEPOSIT}")
+    if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "валюта не поддерживается")
     p = await get_or_create_profile(user)
-    try: inv = await create_deposit_invoice(p, amount)
+    await ensure_not_banned(p)
+    await check_rate_limit(p["id"], "deposit")
+    try: inv = await create_deposit_invoice(p, amount, currency)
     except Exception as e:
         log.exception("create_invoice failed")
         raise HTTPException(400, str(e))
@@ -1144,10 +1243,14 @@ async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
 @app.post("/api/payments/withdraw")
 async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0))
+    currency = (body.get("currency") or "USDT").upper()
     if amount < MIN_WITHDRAW: raise HTTPException(400, f"min {MIN_WITHDRAW}")
+    if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "валюта не поддерживается")
     p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
+    await check_rate_limit(p["id"], "withdraw")
     if float(p["balance"]) < amount: raise HTTPException(400, "insufficient balance")
-    try: payout = await do_withdraw(p, user["id"], amount)
+    try: payout = await do_withdraw(p, user["id"], amount, currency)
     except HTTPException: raise
     except Exception as e:
         log.exception("payout failed")
@@ -1227,6 +1330,8 @@ async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0))
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
+    await check_rate_limit(p["id"], "bet")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     rid = crash_state["round_id"]
     ex = await sb(supabase.table("crash_bets").select("id").eq("round_id", rid).eq("user_id", p["id"]))
@@ -1249,6 +1354,7 @@ async def crash_cashout_global(user: dict = Depends(get_current_user)):
     if mult >= crash_state["crash_point"]:
         raise HTTPException(400, "слишком поздно")
     p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
     rid = crash_state["round_id"]
     b = await sb(supabase.table("crash_bets").select("*").eq("round_id", rid).eq("user_id", p["id"]).eq("status", "active"))
     if not b.data: raise HTTPException(400, "нет активной ставки")
@@ -1292,6 +1398,8 @@ async def mines_start(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     if not (1 <= mines <= 24): raise HTTPException(400, "mines 1..24")
     p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
+    await check_rate_limit(p["id"], "bet")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     if await get_active_round(p["id"]): raise HTTPException(400, "active round exists")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
@@ -1356,6 +1464,8 @@ async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0)); bt = body.get("type"); bv = body.get("value")
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
+    await check_rate_limit(p["id"], "bet")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     n = roulette_number(ss, p["client_seed"], nonce)
