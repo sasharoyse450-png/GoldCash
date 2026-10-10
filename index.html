@@ -13,7 +13,6 @@
   .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
   .grad { background:linear-gradient(135deg,#7c3aed 0%,#3b82f6 100%); }
   .grad-pink { background:linear-gradient(135deg,#ec4899 0%,#8b5cf6 100%); }
-  .grad-gold { background:linear-gradient(135deg,#f59e0b 0%,#ef4444 100%); }
   @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:.7} }
   .pulse-slow { animation:pulse-slow 2s ease-in-out infinite; }
   @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.15)} 100%{transform:scale(1)} }
@@ -39,8 +38,6 @@
     display:flex; align-items:center; justify-content:center;
     font-weight:900; font-size:22px; z-index:2; color:#fff;
     box-shadow:inset 0 0 12px rgba(0,0,0,.6); }
-
-  .crash-fire { background: linear-gradient(180deg, rgba(124,58,237,.25), rgba(239,68,68,.15), transparent); }
 </style>
 </head>
 <body class="text-white min-h-screen">
@@ -93,7 +90,7 @@
   </div>
 </nav>
 
-<!-- MODALS -->
+<!-- DEPOSIT -->
 <div id="modal-deposit" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
   <div class="w-full glass rounded-t-3xl p-5 pb-8">
     <div class="flex justify-between items-center mb-4">
@@ -101,18 +98,19 @@
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
     <label class="text-sm text-gray-400">Сумма (USDT)</label>
-    <input id="deposit-amount" type="number" inputmode="decimal" min="1" step="0.01"
-      class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500" placeholder="10">
+    <input id="deposit-amount" type="number" inputmode="decimal" min="0.1" step="0.01"
+      class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500" placeholder="1">
     <div class="flex gap-2 mb-4">
+      <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="0.5">0.5</button>
+      <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="1">1</button>
       <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="5">5</button>
       <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="10">10</button>
-      <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="25">25</button>
-      <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="50">50</button>
     </div>
     <button id="do-deposit" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Оплатить</button>
   </div>
 </div>
 
+<!-- WITHDRAW -->
 <div id="modal-withdraw" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
   <div class="w-full glass rounded-t-3xl p-5 pb-8">
     <div class="flex justify-between items-center mb-4">
@@ -120,13 +118,14 @@
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
     <label class="text-sm text-gray-400">Сумма (USDT)</label>
-    <input id="withdraw-amount" type="number" inputmode="decimal" min="1" step="0.01"
-      class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500" placeholder="10">
+    <input id="withdraw-amount" type="number" inputmode="decimal" min="0.5" step="0.01"
+      class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500" placeholder="1">
     <p id="withdraw-note" class="text-xs text-gray-500 mb-4">Выплата мгновенно на xRocket.</p>
     <button id="do-withdraw" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Вывести</button>
   </div>
 </div>
 
+<!-- PROFILE -->
 <div id="modal-profile" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
   <div class="w-full glass rounded-t-3xl p-5 pb-8 max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -137,6 +136,7 @@
   </div>
 </div>
 
+<!-- HISTORY -->
 <div id="modal-history" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
   <div class="w-full glass rounded-t-3xl p-5 pb-8 max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -151,6 +151,7 @@
   </div>
 </div>
 
+<!-- FAIRNESS -->
 <div id="modal-fair" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
   <div class="w-full glass rounded-t-3xl p-5 pb-8 max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -162,6 +163,7 @@
   </div>
 </div>
 
+<!-- GAME MODAL -->
 <div id="modal-game" class="fixed inset-0 z-50 hidden bg-[#0f0f1e] flex-col">
   <div class="flex items-center justify-between p-4 border-b border-white/5">
     <h3 id="game-title" class="text-xl font-black">Игра</h3>
@@ -178,7 +180,7 @@ const tg = window.Telegram.WebApp;
 tg.ready(); tg.expand();
 
 let profile = null;
-let cfg = { min_bet: 1, max_bet: 1000, withdraw_cooldown_min: 15 };
+let cfg = { min_bet: 0.1, max_bet: 1000, min_deposit: 0.1, min_withdraw: 0.5, withdraw_cooldown_min: 15 };
 let currentGame = null;
 let crashPoll = null, crashLocalAnim = null;
 
@@ -238,7 +240,7 @@ function updateBalance(v) {
 }
 function updateWithdrawNote() {
   document.getElementById("withdraw-note").innerHTML =
-    `Мин: ${cfg.min_bet} ₮ · Макс: ${cfg.max_bet} ₮ · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
+    `Мин: ${cfg.min_withdraw} ₮ · Макс: ${cfg.max_bet} ₮ · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
 }
 
 // ============ LIVE ============
@@ -403,7 +405,8 @@ document.querySelectorAll(".deposit-quick").forEach(b =>
   b.onclick = () => document.getElementById("deposit-amount").value = b.dataset.v);
 document.getElementById("do-deposit").onclick = async () => {
   const amount = Number(document.getElementById("deposit-amount").value);
-  if (!amount || amount < 1) return toast("Минимум 1 USDT");
+  const min = cfg.min_deposit || 0.1;
+  if (!amount || amount < min) return toast(`Минимум ${min} USDT`);
   haptic();
   try {
     const r = await api("/api/payments/deposit", { method:"POST", body:JSON.stringify({ amount }) });
@@ -412,7 +415,8 @@ document.getElementById("do-deposit").onclick = async () => {
 };
 document.getElementById("do-withdraw").onclick = async () => {
   const amount = Number(document.getElementById("withdraw-amount").value);
-  if (!amount || amount < 1) return toast("Минимум 1 USDT");
+  const min = cfg.min_withdraw || 0.5;
+  if (!amount || amount < min) return toast(`Минимум ${min} USDT`);
   if (amount > num(profile.balance)) return toast("Недостаточно средств");
   haptic("medium");
   try {
@@ -444,26 +448,26 @@ document.addEventListener("click", e => {
 });
 
 // ============ BET INPUT ============
-function betInputRow(id="bet-input", val=1) {
+function betInputRow(id="bet-input", val=0.5) {
   return `
     <div class="flex items-center gap-2">
       <button class="bet-minus glass rounded-xl w-10 h-10 text-xl">−</button>
-      <input id="${id}" type="number" value="${val}" min="${cfg.min_bet}" max="${cfg.max_bet}" step="0.5"
+      <input id="${id}" type="number" value="${val}" min="${cfg.min_bet}" max="${cfg.max_bet}" step="0.1"
         class="flex-1 bg-white/5 rounded-xl px-3 py-2.5 text-lg text-center outline-none border border-white/10 focus:border-purple-500">
       <button class="bet-plus glass rounded-xl w-10 h-10 text-xl">+</button>
     </div>
     <div class="text-[10px] text-gray-500 text-center mt-1">мин ${cfg.min_bet} · макс ${cfg.max_bet}</div>
     <div class="flex gap-2 mt-2">
-      ${[1,5,10,25,50].map(v=>`<button class="bet-quick flex-1 glass rounded-lg py-1.5 text-xs font-semibold" data-v="${v}">${v}</button>`).join("")}
+      ${[0.1,0.5,1,5,10].map(v=>`<button class="bet-quick flex-1 glass rounded-lg py-1.5 text-xs font-semibold" data-v="${v}">${v}</button>`).join("")}
     </div>`;
 }
 function wireBet(scope, getEl, onChange) {
   scope.querySelectorAll(".bet-quick").forEach(b =>
     b.onclick = () => { getEl().value = Math.min(cfg.max_bet, b.dataset.v); onChange?.(); });
   scope.querySelector(".bet-minus")?.addEventListener("click", () => {
-    getEl().value = Math.max(cfg.min_bet, Number(getEl().value||cfg.min_bet) - 1); onChange?.(); });
+    getEl().value = Math.max(cfg.min_bet, +(Number(getEl().value||cfg.min_bet) - 0.1).toFixed(2)); onChange?.(); });
   scope.querySelector(".bet-plus")?.addEventListener("click", () => {
-    getEl().value = Math.min(cfg.max_bet, Number(getEl().value||cfg.min_bet) + 1); onChange?.(); });
+    getEl().value = Math.min(cfg.max_bet, +(Number(getEl().value||cfg.min_bet) + 0.1).toFixed(2)); onChange?.(); });
 }
 function validateBet(v) {
   if (!v || v < cfg.min_bet) { toast(`Мин. ставка ${cfg.min_bet}`); return false; }
@@ -471,7 +475,7 @@ function validateBet(v) {
   return true;
 }
 
-// ============ GLOBAL CRASH ============
+// ============ CRASH ============
 function renderCrash() {
   const body = document.getElementById("game-body");
   body.innerHTML = `
@@ -486,7 +490,7 @@ function renderCrash() {
 
       <div id="crash-betbox">
         <div id="crash-betbox-inner">
-          ${betInputRow("crash-bet")}
+          ${betInputRow("crash-bet", 0.5)}
           <button id="crash-bet-btn" class="grad w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Сделать ставку</button>
         </div>
         <button id="crash-cashout-btn" class="hidden bg-green-600 w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Забрать</button>
@@ -502,7 +506,6 @@ function renderCrash() {
   const betEl = () => body.querySelector("#crash-bet");
   wireBet(body, betEl);
 
-  // Первичный poll
   refreshCrashState();
   if (crashPoll) clearInterval(crashPoll);
   crashPoll = setInterval(refreshCrashState, 700);
@@ -536,7 +539,6 @@ async function refreshCrashState() {
     const body = document.getElementById("game-body");
     if (!body) return;
 
-    // История крашей
     const hist = body.querySelector("#crash-history");
     if (hist) {
       const pills = (st.recent || []).map(r => {
@@ -554,7 +556,6 @@ async function refreshCrashState() {
     const cashBtn = body.querySelector("#crash-cashout-btn");
     const myStatus = body.querySelector("#crash-my-status");
 
-    // Двигаем множитель
     if (st.status === "running") {
       const startedAt = st.started_at;
       if (startedAt) {
@@ -585,7 +586,6 @@ async function refreshCrashState() {
       statusEl.innerText = "Ожидание…";
     }
 
-    // Кнопки
     const my = st.my_bet;
     const canBet = st.status === "betting" && !my;
     const canCash = st.status === "running" && my && my.status === "active";
@@ -607,7 +607,6 @@ async function refreshCrashState() {
       myStatus.innerHTML = "";
     }
 
-    // Список ставок
     const listEl = body.querySelector("#crash-bets-list");
     const countEl = body.querySelector("#crash-bets-count");
     if (countEl) countEl.innerText = String((st.bets || []).length);
@@ -635,9 +634,7 @@ async function refreshCrashState() {
     }
 
     updateBalance(num(st.balance));
-  } catch (e) {
-    // тихо
-  }
+  } catch (e) {}
 }
 
 // ============ MINES ============
@@ -658,7 +655,7 @@ function renderMines() {
         <div class="text-sm text-gray-400">Открыто: <span id="mines-revealed" class="font-bold text-white">0</span></div>
       </div>
       <div id="mines-bet-wrap">
-        ${betInputRow("mines-bet")}
+        ${betInputRow("mines-bet", 0.5)}
         <button id="mines-start" class="grad w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Старт</button>
       </div>
       <button id="mines-cashout" class="hidden bg-green-600 w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Забрать</button>
@@ -781,7 +778,7 @@ function renderRoulette() {
           class="flex-1 bg-white/5 rounded-xl px-3 py-2 text-center outline-none border border-white/10 focus:border-purple-500">
         <button id="roul-num-btn" class="grad rounded-xl px-4 py-2 font-bold text-sm">Число (36x)</button>
       </div>
-      ${betInputRow("roul-bet")}
+      ${betInputRow("roul-bet", 0.5)}
       <button id="roul-spin" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Крутить</button>
       <div id="roul-result" class="text-center text-sm"></div>
 
