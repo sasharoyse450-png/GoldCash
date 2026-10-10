@@ -2075,4 +2075,323 @@ async def bj_state(user: dict = Depends(get_current_user)):
     if not ar or ar["game_type"] != "blackjack":
         return {"active": False}
     st = ar["state"]
-    return
+    return {"active": True, "player": st["player"], "dealer": [st["dealer"][0], "??"],
+            "player_value": bj_value(st["player"]),
+            "dealer_value": bj_value([st["dealer"][0]]),
+            "finished": False, "bet": float(ar["bet_amount"])}
+
+
+@app.post("/api/games/blackjack/start")
+async def bj_start(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("blackjack")
+    if MAINTENANCE: raise HTTPException(503, "технические работы")
+    bet = float(body.get("bet", 0))
+    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
+    p = await get_or_create_profile(user)
+    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
+    ar = await get_active_round(p["id"])
+    if ar:
+        if ar["game_type"] == "blackjack":
+            st = ar["state"]
+            return {"ok": True, "resumed": True, "player": st["player"],
+                    "dealer": [st["dealer"][0], "??"],
+                    "player_value": bj_value(st["player"]),
+                    "dealer_value": bj_value([st["dealer"][0]]), "finished": False}
+        raise HTTPException(400, f"активная игра: {ar['game_type']}")
+    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
+    deck = bj_deck(ss, p["client_seed"], nonce)
+    player = [deck[0], deck[2]]; dealer = [deck[1], deck[3]]; rest = deck[4:]
+    player_v = bj_value(player)
+    state = {"player": player, "dealer": dealer, "rest": rest, "bet": bet, "status": "player_turn"}
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
+    await sb(supabase.table("active_rounds").insert({
+        "user_id": p["id"], "game_type": "blackjack", "bet_amount": bet,
+        "state": state, "server_seed": ss, "nonce": nonce}))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
+        "status": "completed", "meta": {"game": "blackjack"}}))
+    if player_v == 21:
+        dealer_full = bj_value(dealer)
+        if dealer_full == 21:
+            payout = bet; profit = 0
+            await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+        else:
+            payout = round(bet * 2.5, 8); profit = round(payout - bet, 8)
+            await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
+            "status": "completed", "meta": {"game": "blackjack", "bj": True}}))
+        await log_round(p["id"], "blackjack", bet,
+                        {"player": player, "dealer": dealer, "bj": True}, profit, ss, nonce)
+        await clear_active_round(p["id"])
+        return {"ok": True, "player": player, "dealer": dealer,
+                "player_value": player_v, "dealer_value": dealer_full,
+                "finished": True, "win": profit > 0, "push": profit == 0,
+                "profit": profit, "payout": payout}
+    return {"ok": True, "player": player, "dealer": [dealer[0], "??"],
+            "player_value": player_v, "dealer_value": bj_value([dealer[0]]), "finished": False}
+
+
+@app.post("/api/games/blackjack/hit")
+async def bj_hit(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "blackjack": raise HTTPException(400, "нет активной игры")
+    st = ar["state"]
+    if st["status"] != "player_turn": raise HTTPException(400, "не твой ход")
+    rest = st["rest"]
+    if not rest: raise HTTPException(400, "колода кончилась")
+    card = rest.pop(0); st["player"].append(card); st["rest"] = rest
+    pv = bj_value(st["player"])
+    if pv > 21:
+        await log_round(p["id"], "blackjack", float(st["bet"]),
+                        {"player": st["player"], "dealer": st["dealer"], "bust": True},
+                        -float(st["bet"]), ar["server_seed"], ar["nonce"])
+        asyncio.create_task(credit_referrer_on_loss(p["id"], float(st["bet"])))
+        await clear_active_round(p["id"])
+        return {"ok": True, "player": st["player"], "dealer": st["dealer"],
+                "player_value": pv, "dealer_value": bj_value(st["dealer"]),
+                "finished": True, "win": False, "push": False,
+                "profit": -float(st["bet"]), "payout": 0}
+    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
+    return {"ok": True, "player": st["player"], "dealer": [st["dealer"][0], "??"],
+            "player_value": pv, "dealer_value": bj_value([st["dealer"][0]]), "finished": False}
+
+
+@app.post("/api/games/blackjack/stand")
+async def bj_stand(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "blackjack": raise HTTPException(400, "нет активной игры")
+    st = ar["state"]
+    if st["status"] != "player_turn": raise HTTPException(400, "уже завершено")
+    rest = st["rest"]
+    while bj_value(st["dealer"]) < 17 and rest:
+        st["dealer"].append(rest.pop(0))
+    st["rest"] = rest
+    pv = bj_value(st["player"]); dv = bj_value(st["dealer"])
+    bet = float(st["bet"]); profit = -bet; payout = 0; push = False; win = False
+    if dv > 21 or pv > dv:
+        win = True; payout = round(bet * 2, 8); profit = round(payout - bet, 8)
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
+            "status": "completed", "meta": {"game": "blackjack"}}))
+    elif pv == dv:
+        push = True; profit = 0; payout = bet
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+    else:
+        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+    await log_round(p["id"], "blackjack", bet,
+                    {"player": st["player"], "dealer": st["dealer"], "win": win, "push": push},
+                    profit, ar["server_seed"], ar["nonce"])
+    await clear_active_round(p["id"])
+    return {"ok": True, "player": st["player"], "dealer": st["dealer"],
+            "player_value": pv, "dealer_value": dv,
+            "finished": True, "win": win, "push": push,
+            "profit": profit, "payout": payout}
+
+
+@app.get("/api/games/tower/state")
+async def tower_state(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "tower": return {"active": False}
+    st = ar["state"]
+    return {"active": True, "level": st["level"], "mult": tower_mult(st["level"]),
+            "next_mult": tower_mult(st["level"] + 1),
+            "bet": float(ar["bet_amount"]),
+            "revealed": st.get("revealed", []),
+            "mine_positions": st["mine_positions"]}
+
+
+@app.post("/api/games/tower/start")
+async def tower_start(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("tower")
+    if MAINTENANCE: raise HTTPException(503, "технические работы")
+    bet = float(body.get("bet", 0))
+    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
+    p = await get_or_create_profile(user)
+    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
+    ar = await get_active_round(p["id"])
+    if ar:
+        if ar["game_type"] == "tower":
+            st = ar["state"]
+            return {"ok": True, "resumed": True, "level": st["level"],
+                    "mult": tower_mult(st["level"]),
+                    "next_mult": tower_mult(st["level"] + 1)}
+        raise HTTPException(400, f"активная игра: {ar['game_type']}")
+    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
+    positions = tower_step_positions(ss, p["client_seed"], nonce, levels=6)
+    state = {"level": 0, "mine_positions": positions, "bet": bet, "revealed": []}
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
+    await sb(supabase.table("active_rounds").insert({
+        "user_id": p["id"], "game_type": "tower", "bet_amount": bet,
+        "state": state, "server_seed": ss, "nonce": nonce}))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
+        "status": "completed", "meta": {"game": "tower"}}))
+    return {"ok": True, "level": 0, "mult": 1.0, "next_mult": tower_mult(1)}
+
+
+@app.post("/api/games/tower/step")
+async def tower_step(body: dict, user: dict = Depends(get_current_user)):
+    door = int(body.get("door", -1))
+    if not (0 <= door <= 2): raise HTTPException(400, "door 0..2")
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "tower": raise HTTPException(400, "нет активной игры")
+    st = ar["state"]
+    level = st["level"]
+    if level >= len(st["mine_positions"]): raise HTTPException(400, "макс уровень")
+    mine = st["mine_positions"][level]
+    bet = float(st["bet"])
+    if door == mine:
+        await log_round(p["id"], "tower", bet,
+                        {"level": level, "door": door, "mine": mine, "lost": True},
+                        -bet, ar["server_seed"], ar["nonce"])
+        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+        await clear_active_round(p["id"])
+        return {"ok": True, "lost": True, "mine": mine, "level": level}
+    st["level"] = level + 1
+    st["revealed"].append({"level": level, "door": door, "mine": mine})
+    new_level = st["level"]
+    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
+    return {"ok": True, "lost": False, "level": new_level,
+            "mult": tower_mult(new_level), "next_mult": tower_mult(new_level + 1),
+            "mine": mine, "all_levels": st["mine_positions"]}
+
+
+@app.post("/api/games/tower/cashout")
+async def tower_cashout(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "tower": raise HTTPException(400, "нет активной игры")
+    st = ar["state"]
+    level = st["level"]
+    if level <= 0: raise HTTPException(400, "пройди хотя бы 1 уровень")
+    bet = float(st["bet"]); mult = tower_mult(level)
+    payout = round(bet * mult, 8); profit = round(payout - bet, 8)
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
+        "status": "completed", "meta": {"game": "tower", "mult": mult}}))
+    await log_round(p["id"], "tower", bet,
+                    {"level": level, "mult": mult, "revealed": st["revealed"]},
+                    profit, ar["server_seed"], ar["nonce"])
+    await clear_active_round(p["id"])
+    return {"ok": True, "level": level, "mult": mult, "payout": payout, "profit": profit,
+            "mine_positions": st["mine_positions"]}
+
+
+@app.post("/api/games/mines/start")
+async def mines_start(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("mines")
+    if MAINTENANCE: raise HTTPException(503, "технические работы")
+    bet = float(body.get("bet", 0)); mines = int(body.get("mines", 3))
+    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
+    if not (1 <= mines <= 24): raise HTTPException(400, "mines 1..24")
+    p = await get_or_create_profile(user)
+    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
+    if await get_active_round(p["id"]): raise HTTPException(400, "active round exists")
+    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
+    positions = mine_positions(ss, p["client_seed"], nonce, mines)
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
+    await sb(supabase.table("active_rounds").insert({
+        "user_id": p["id"], "game_type": "mines", "bet_amount": bet,
+        "state": {"mines": mines, "positions": positions, "revealed": []},
+        "server_seed": ss, "nonce": nonce}))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
+        "status": "completed", "meta": {"game": "mines"}}))
+    return {"ok": True, "mines": mines, "mult": mines_mult(mines, 0)}
+
+
+@app.post("/api/games/mines/reveal")
+async def mines_reveal(body: dict, user: dict = Depends(get_current_user)):
+    idx = int(body.get("cell", -1))
+    if not (0 <= idx < 25): raise HTTPException(400, "bad cell")
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "mines": raise HTTPException(400, "no active mines round")
+    st = ar["state"]
+    if idx in st["revealed"]: raise HTTPException(400, "already revealed")
+    positions = set(st["positions"]); bet = float(ar["bet_amount"])
+    if idx in positions:
+        await log_round(p["id"], "mines", bet,
+                        {"mine_hit": idx, "revealed": st["revealed"], "mines": st["mines"], "positions": st["positions"]},
+                        -bet, ar["server_seed"], ar["nonce"])
+        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+        await clear_active_round(p["id"])
+        return {"ok": True, "lost": True, "mine_hit": idx, "positions": st["positions"]}
+    st["revealed"].append(idx)
+    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
+    return {"ok": True, "lost": False, "revealed": st["revealed"],
+            "mult": mines_mult(st["mines"], len(st["revealed"]))}
+
+
+@app.post("/api/games/mines/cashout")
+async def mines_cashout(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "mines": raise HTTPException(400, "no active mines round")
+    st = ar["state"]; k = len(st["revealed"])
+    if k == 0: raise HTTPException(400, "reveal at least one cell")
+    bet = float(ar["bet_amount"]); mult = mines_mult(st["mines"], k)
+    payout = round(bet * mult, 8); profit = round(payout - bet, 8)
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+    await log_round(p["id"], "mines", bet,
+                    {"revealed": st["revealed"], "mult": mult, "mines": st["mines"], "positions": st["positions"]},
+                    profit, ar["server_seed"], ar["nonce"])
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
+        "status": "completed", "meta": {"game": "mines"}}))
+    await clear_active_round(p["id"])
+    return {"ok": True, "mult": mult, "payout": payout, "profit": profit, "positions": st["positions"]}
+
+
+RED = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
+BLACK = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
+
+
+@app.post("/api/games/roulette/bet")
+async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("roulette")
+    if MAINTENANCE: raise HTTPException(503, "технические работы")
+    bet = float(body.get("bet", 0)); bt = body.get("type"); bv = body.get("value")
+    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
+    p = await get_or_create_profile(user)
+    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
+    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
+    n = roulette_number(ss, p["client_seed"], nonce)
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
+    win = False; pm = 0.0
+    if bt == "red" and n in RED: win, pm = True, ROUL_RB_PAYOUT
+    elif bt == "black" and n in BLACK: win, pm = True, ROUL_RB_PAYOUT
+    elif bt == "even" and n != 0 and n % 2 == 0: win, pm = True, ROUL_RB_PAYOUT
+    elif bt == "odd" and n % 2 == 1: win, pm = True, ROUL_RB_PAYOUT
+    elif bt in ("dozen1","dozen2","dozen3"):
+        d = {"dozen1": range(1,13), "dozen2": range(13,25), "dozen3": range(25,37)}[bt]
+        if n in d: win, pm = True, ROUL_DOZEN_PAYOUT
+    elif bt == "number" and int(bv) == n: win, pm = True, ROUL_NUM_PAYOUT
+    profit = -bet
+    if win:
+        payout = round(bet * pm, 8); profit = round(payout - bet, 8)
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
+            "status": "completed", "meta": {"game": "roulette"}}))
+    else:
+        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+    await log_round(p["id"], "roulette", bet, {"n": n, "bet_type": bt, "win": win}, profit, ss, nonce)
+    color = "green" if n == 0 else ("red" if n in RED else "black")
+    return {"ok": True, "number": n, "color": color, "win": win,
+            "payout": round(bet * pm, 8) if win else 0, "profit": profit}
