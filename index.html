@@ -763,7 +763,6 @@ function renderProfile() {
   if (dc) dc.value = cur;
   if (wc) wc.value = cur;
 
-  // VIP badge
   const vb = document.getElementById("vip-badge");
   const vip = (profile && profile.vip) || {};
   if (vb) {
@@ -774,11 +773,9 @@ function renderProfile() {
       vb.innerText = (vip.tier_name || vip.tier).split(" ")[0];
     } else vb.classList.add("hidden");
   }
-  // Admin button
   const ab = document.getElementById("btn-admin");
   if (ab) ab.classList.toggle("hidden", !profile?.is_admin);
 
-  // bonus bar color on pill
   const pill = document.getElementById("balance-pill");
   const bonus = (profile && profile.bonus) || {};
   if (bonus.bonus_active) {
@@ -983,7 +980,7 @@ const RULES = {
   tower: `<b>🗼 Tower</b><br>6 уровней по 3 двери. Одна мина. ×1.44 за уровень.<br><b>RTP:</b> 96%`,
   keno: `<b>🎯 Keno</b><br>Выбери 1-10 чисел из 80. Рисуется 20. Чем больше угадал — тем выше выплата.<br><b>RTP:</b> ~95%`,
   hilo: `<b>🃏 Hi-Lo</b><br>Угадай — следующая карта больше или меньше. Множитель растёт с каждым шагом.<br><b>RTP:</b> ~96%`,
-  scratch: `<b>🎟 Scratch</b><br>6 билетов с разной ставкой. Сотри 9 ячеек пальцем. Три одинаковых символа = приз.<br><b>RTP:</b> ~94%`,
+  scratch: `<b>🎟 Scratch</b><br>6 билетов с разной ставкой. Сотри 9 ячеек пальцем. Три одинаковых множителя = приз.<br><b>RTP:</b> ~94%`,
 };
 
 function openRules(game) {
@@ -2346,17 +2343,17 @@ function renderHilo() {
   })();
 }
 
-/* ==================== SCRATCH (9-cell drag) ==================== */
+/* ==================== SCRATCH (9-cell drag, multipliers) ==================== */
 function renderScratch() {
   const body = document.getElementById("game-body");
 
   const tickets = [
     { id:"mat",      name:"Мать",      bet:0.20,  color:"#10b981", max:14 },
-    { id:"lazur",    name:"Лазурь",    bet:0.50,  color:"#3b82f6", max:50 },
-    { id:"violet",   name:"Виолет",    bet:1.00,  color:"#a855f7", max:60 },
-    { id:"sunset",   name:"Закат",     bet:2.00,  color:"#f97316", max:200 },
-    { id:"gold",     name:"Золото",    bet:5.00,  color:"#fbbf24", max:300 },
-    { id:"obsidian", name:"Обисидиан", bet:10.00, color:"#e5e7eb", max:1000 },
+    { id:"lazur",    name:"Лазурь",    bet:0.50,  color:"#3b82f6", max:14 },
+    { id:"violet",   name:"Виолет",    bet:1.00,  color:"#a855f7", max:14 },
+    { id:"sunset",   name:"Закат",     bet:2.00,  color:"#f97316", max:14 },
+    { id:"gold",     name:"Золото",    bet:5.00,  color:"#fbbf24", max:14 },
+    { id:"obsidian", name:"Обисидиан", bet:10.00, color:"#e5e7eb", max:14 },
   ];
 
   let selectedIdx = 0;
@@ -2411,7 +2408,7 @@ function renderScratch() {
       <div class="flex justify-between items-center mb-3">
         <div>
           <div class="text-xs font-black" style="color:var(--green);">RAIKA</div>
-          <div class="text-xs font-bold" style="color:var(--muted);">СОБЕРИТЕ 3 одинаковых приза</div>
+          <div class="text-xs font-bold" style="color:var(--muted);">СОБЕРИТЕ 3 одинаковых множителя</div>
         </div>
         <div class="text-right">
           <div class="text-[10px]" style="color:var(--muted);">МАКС. ПРИЗ</div>
@@ -2422,7 +2419,9 @@ function renderScratch() {
         <div style="position:absolute; inset:0; display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
              padding:12px; background:linear-gradient(135deg,#14301f,#0c1e13);">
           ${Array.from({length:9}).map(() => `
-            <div style="background:rgba(0,0,0,.3); border-radius:8px; border:1px solid rgba(255,255,255,.05);"></div>
+            <div style="background:rgba(0,0,0,.3); border-radius:8px; border:1px solid rgba(255,255,255,.05);
+                        display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.15);
+                        font-weight:900; font-size:clamp(14px,4vw,22px);">?</div>
           `).join("")}
         </div>
         <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
@@ -2476,7 +2475,7 @@ function renderScratch() {
       <div class="flex justify-between items-center mb-3">
         <div>
           <div class="text-xs font-black" style="color:var(--green);">RAIKA</div>
-          <div class="text-xs font-bold" style="color:var(--muted);">СОБЕРИТЕ 3 одинаковых приза</div>
+          <div class="text-xs font-bold" style="color:var(--muted);">СОБЕРИТЕ 3 одинаковых множителя</div>
         </div>
         <div class="text-right">
           <div class="text-[10px]" style="color:var(--muted);">МАКС. ПРИЗ</div>
@@ -2489,10 +2488,11 @@ function renderScratch() {
                     padding:12px; background:linear-gradient(135deg,#14301f,#0c1e13);">
           ${Array.from({length:9}).map((_, i) => `
             <div class="scratch-cell" data-i="${i}"
-                 style="background:rgba(0,0,0,.3); border-radius:8px;
+                 style="background:rgba(0,0,0,.35); border-radius:8px;
                         border:1px solid rgba(255,255,255,.05);
                         display:flex; align-items:center; justify-content:center;
-                        font-size:clamp(28px,8vw,48px); line-height:1;"></div>
+                        font-weight:900; font-size:clamp(16px,5.5vw,26px);
+                        color:#e8eaed; letter-spacing:-.03em;"></div>
           `).join("")}
         </div>
         <canvas id="scratch-canvas"
@@ -2653,8 +2653,33 @@ function renderScratch() {
       const sym = currentCells[i];
       const isWin = winSym && sym === winSym;
       el.innerText = sym;
-      el.style.background = isWin ? "rgba(16,185,129,.28)" : "rgba(255,255,255,.06)";
-      el.style.border = isWin ? "2px solid var(--green)" : "1px solid rgba(255,255,255,.08)";
+
+      const val = parseFloat(sym) || 0;
+      let bg, bd, col;
+      if (isWin) {
+        bg = "rgba(16,185,129,.28)";
+        bd = "2px solid var(--green)";
+        col = "#10b981";
+      } else if (val === 0) {
+        bg = "rgba(255,255,255,.04)";
+        bd = "1px solid rgba(255,255,255,.06)";
+        col = "rgba(255,255,255,.3)";
+      } else if (val >= 5) {
+        bg = "rgba(251,191,36,.12)";
+        bd = "1px solid rgba(251,191,36,.3)";
+        col = "#fbbf24";
+      } else if (val >= 2) {
+        bg = "rgba(249,115,22,.10)";
+        bd = "1px solid rgba(249,115,22,.25)";
+        col = "#f97316";
+      } else {
+        bg = "rgba(255,255,255,.06)";
+        bd = "1px solid rgba(255,255,255,.08)";
+        col = "#e8eaed";
+      }
+      el.style.background = bg;
+      el.style.border = bd;
+      el.style.color = col;
       el.style.boxShadow = isWin ? "0 0 16px rgba(16,185,129,.35)" : "none";
       el.style.animation = "cardIn .35s ease both";
       el.style.animationDelay = (i * 55) + "ms";
@@ -2666,7 +2691,7 @@ function renderScratch() {
       const payout = t.bet * currentMult;
       const profit = payout - t.bet;
       res.innerHTML = `<div style="color:var(--green); font-weight:900; font-size:22px; padding:6px 0;">
-        🎉 ×${currentMult} · +${profit.toFixed(2)} ₮
+        🎉 ${currentMult}× · +${profit.toFixed(2)} ₮
       </div>`;
       updateBalance(num(profile.balance) + payout);
       haptic("heavy");
