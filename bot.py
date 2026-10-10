@@ -220,26 +220,56 @@ def hilo_multiplier(current, guess, remaining_cards):
     total = len(remaining_cards)
     return round((1 - HOUSE_EDGE) * total / favorable, 4)
 
-# ================== SCRATCH (9-cell, 6 tiers) ==================
+# ================== SCRATCH (9-cell, multipliers) ==================
+SCRATCH_SYMBOLS = ["0x", "0.5x", "1x", "2x", "2.5x", "4x", "5x", "7.5x", "10x", "14x"]
+SCRATCH_VALUES  = [0.0, 0.5, 1.0, 2.0, 2.5, 4.0, 5.0, 7.5, 10.0, 14.0]
+
 SCRATCH_TIERS = [
-    {"id":"mat",      "name":"Мать",       "bet":0.20,  "color":"#10b981", "max":14,   "win_chance":0.20,
-     "symbols":[("🍋",1,30),("🍒",2,30),("⭐",5,20),("💎",14,20)]},
-    {"id":"lazur",    "name":"Лазурь",     "bet":0.50,  "color":"#3b82f6", "max":50,   "win_chance":0.15,
-     "symbols":[("🍋",1,44),("🍒",3,40),("⭐",8,8),("💎",50,8)]},
-    {"id":"violet",   "name":"Виолет",     "bet":1.00,  "color":"#a855f7", "max":60,   "win_chance":0.14,
-     "symbols":[("🍋",1,40),("🍒",3,45),("⭐",10,8),("💎",60,7)]},
-    {"id":"sunset",   "name":"Закат",      "bet":2.00,  "color":"#f97316", "max":200,  "win_chance":0.115,
-     "symbols":[("🍋",2,70),("🍒",5,20),("⭐",20,8),("💎",200,2)]},
-    {"id":"gold",     "name":"Золото",     "bet":5.00,  "color":"#fbbf24", "max":300,  "win_chance":0.13,
-     "symbols":[("🍋",2,75),("🍒",6,18),("⭐",30,6),("💎",300,1)]},
-    {"id":"obsidian", "name":"Обисидиан",  "bet":10.00, "color":"#e5e7eb", "max":1000, "win_chance":0.085,
-     "symbols":[("🍋",3,80),("🍒",10,15),("⭐",50,4.5),("💎",1000,0.5)]},
+    {"id":"mat",      "name":"Мать",      "bet":0.20,  "color":"#10b981", "max":14,
+     "win_chance":0.22,
+     "win_weights":  [0, 5,  10, 15, 15, 20, 15, 10, 6, 4],
+     "lose_weights": [40, 20, 15, 10, 6,  4,  2.5, 1.5, 0.7, 0.3]},
+    {"id":"lazur",    "name":"Лазурь",    "bet":0.50,  "color":"#3b82f6", "max":14,
+     "win_chance":0.20,
+     "win_weights":  [0, 5,  10, 12, 15, 20, 16, 11, 7, 4],
+     "lose_weights": [45, 18, 14, 10, 6,  4,  2,   0.7, 0.3, 0.1]},
+    {"id":"violet",   "name":"Виолет",    "bet":1.00,  "color":"#a855f7", "max":14,
+     "win_chance":0.20,
+     "win_weights":  [0, 4,  9,  12, 14, 20, 16, 12, 8, 5],
+     "lose_weights": [45, 18, 14, 10, 6,  4,  2,   0.7, 0.3, 0.1]},
+    {"id":"sunset",   "name":"Закат",     "bet":2.00,  "color":"#f97316", "max":14,
+     "win_chance":0.18,
+     "win_weights":  [0, 4,  8,  11, 13, 18, 17, 13, 10, 6],
+     "lose_weights": [48, 17, 13, 9,  6,  4,  2,   0.7, 0.3, 0.1]},
+    {"id":"gold",     "name":"Золото",    "bet":5.00,  "color":"#fbbf24", "max":14,
+     "win_chance":0.17,
+     "win_weights":  [0, 3,  7,  10, 12, 18, 17, 14, 11, 8],
+     "lose_weights": [50, 16, 12, 9,  6,  4,  2,   0.7, 0.3, 0.1]},
+    {"id":"obsidian", "name":"Обисидиан", "bet":10.00, "color":"#e5e7eb", "max":14,
+     "win_chance":0.15,
+     "win_weights":  [0, 3,  6,  9,  11, 17, 17, 15, 12, 10],
+     "lose_weights": [52, 15, 12, 8,  6,  4,  2,   0.7, 0.3, 0.1]},
 ]
 SCRATCH_TIER_MAP = {t["id"]: t for t in SCRATCH_TIERS}
 
+def _weighted_pick(weights, r):
+    total = sum(weights)
+    if total <= 0: return 0
+    target = r * total
+    cum = 0.0
+    for i, w in enumerate(weights):
+        cum += w
+        if target < cum:
+            return i
+    return len(weights) - 1
+
 def scratch_draw(ss, cs, nonce, tier):
-    symbols = tier["symbols"]
     win_chance = tier["win_chance"]
+    win_weights = tier["win_weights"]
+    lose_weights = tier["lose_weights"]
+
+    roll = pf_rand(ss, cs, nonce * 13 + 1)
+    is_win = roll < win_chance
 
     positions = list(range(9))
     st = int.from_bytes(hashlib.sha256(f"{ss}:{cs}:{nonce}:pos".encode()).digest()[:8], "big")
@@ -248,62 +278,38 @@ def scratch_draw(ss, cs, nonce, tier):
         j = st % (i + 1)
         positions[i], positions[j] = positions[j], positions[i]
 
-    roll = pf_rand(ss, cs, nonce * 13 + 1)
-    is_win = roll < win_chance
-
     if is_win:
-        total_w = sum(w for _, _, w in symbols)
-        pick_roll = pf_rand(ss, cs, nonce * 13 + 2) * total_w
-        cum = 0.0
-        win_sym = symbols[0]
-        for emoji, mult, w in symbols:
-            cum += w
-            if pick_roll < cum:
-                win_sym = (emoji, mult, w)
-                break
+        win_idx = _weighted_pick(win_weights, pf_rand(ss, cs, nonce * 13 + 2))
+        if win_idx == 0:
+            is_win = False
+        else:
+            win_sym = SCRATCH_SYMBOLS[win_idx]
+            win_val = SCRATCH_VALUES[win_idx]
+            win_pos = set(positions[:3])
+            cells = [None] * 9
+            others = [j for j in range(len(SCRATCH_SYMBOLS)) if j != win_idx]
+            ow = [lose_weights[j] for j in others]
+            if sum(ow) <= 0: ow = [1] * len(others)
+            for i in range(9):
+                if i in win_pos:
+                    cells[i] = win_sym
+                else:
+                    r = pf_rand(ss, cs, nonce * 100 + i)
+                    pick_local = _weighted_pick(ow, r)
+                    cells[i] = SCRATCH_SYMBOLS[others[pick_local]]
+            return cells, win_val
 
-        win_positions = set(positions[:3])
-        others = [s for s in symbols if s[0] != win_sym[0]]
-        others_total = sum(w for _, _, w in others)
-
-        cells = [None] * 9
-        for i in range(9):
-            if i in win_positions:
-                cells[i] = win_sym[0]
-            else:
-                r = pf_rand(ss, cs, nonce * 100 + i) * others_total
-                cum = 0.0
-                pick = others[0][0]
-                for emoji, mult, w in others:
-                    cum += w
-                    if r < cum:
-                        pick = emoji
-                        break
-                cells[i] = pick
-        return cells, float(win_sym[1])
-
-    total_w = sum(w for _, _, w in symbols)
-    for attempt in range(50):
+    for attempt in range(80):
         cells = []
         for i in range(9):
-            r = pf_rand(ss, cs, nonce * 1000 + attempt * 100 + i) * total_w
-            cum = 0.0
-            pick = symbols[0][0]
-            for emoji, mult, w in symbols:
-                cum += w
-                if r < cum:
-                    pick = emoji
-                    break
-            cells.append(pick)
+            r = pf_rand(ss, cs, nonce * 1000 + attempt * 100 + i)
+            idx = _weighted_pick(lose_weights, r)
+            cells.append(SCRATCH_SYMBOLS[idx])
         cnt = Counter(cells)
         if max(cnt.values()) < 3:
             return cells, 0.0
 
-    cells = [symbols[i % len(symbols)][0] for i in range(9)]
-    for i in range(8, 0, -1):
-        j = (st + i * 7) % (i + 1)
-        cells[i], cells[j] = cells[j], cells[i]
-    return cells, 0.0
+    return ["0x"] * 9, 0.0
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 BOT_USERNAME: str | None = None
@@ -487,19 +493,19 @@ async def xrocket_create_invoice(amount, description, client_id, currency="USDT"
 
 async def xrocket_create_payout(user_id, amount, comment, client_id, currency="USDT"):
     cur = currency.upper()
-    amt = str(float(amount))
     payload = {
         "clientPayoutId": client_id,
-        "target": str(user_id),
-        "targetType": "telegram_user_id",
-        "asset": cur,
-        "amount": amt,
-        "priceCurrency": cur,
-        "priceAmount": amt,
+        "userId": int(user_id),
+        "currency": cur,
+        "amount": float(amount),
         "description": comment or "Withdraw",
     }
+    log.info("xRocket payout payload: %s", json.dumps(payload))
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
-    return {"id": data.get("payoutId"), "raw": data}
+    payout_id = data.get("payoutId") or data.get("id")
+    status = data.get("status") or "pending"
+    log.info("xRocket payout created: id=%s status=%s", payout_id, status)
+    return {"id": payout_id, "status": status, "raw": data}
 
 # ================== MATH / PF ==================
 def pf_rand(ss, cs, n):
@@ -777,6 +783,7 @@ async def daily_withdrawn(uid):
 async def do_withdraw(profile, tg_id, amount, currency="USDT"):
     if currency not in SUPPORTED_CURRENCIES:
         raise HTTPException(400, "неподдерживаемая валюта")
+
     last = await sb(supabase.table("transactions").select("created_at")
                     .eq("user_id", profile["id"]).eq("type", "deposit").eq("status", "completed")
                     .order("created_at", desc=True).limit(1))
@@ -789,17 +796,36 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
                 raise HTTPException(400, f"после депозита подожди {m}м {s}с")
         except HTTPException: raise
         except Exception: pass
+
     spent = await daily_withdrawn(profile["id"])
     if spent + amount > MAX_WITHDRAW_DAILY:
         raise HTTPException(400, f"дневной лимит. Осталось {max(0, MAX_WITHDRAW_DAILY - spent):.2f}")
+
     cid = f"wd_{profile['id'][:8]}_{int(time.time())}"
-    payout = await xrocket_create_payout(tg_id, amount, "GoldCash withdraw", cid, currency)
+
     await sb_rpc("change_balance", {"p_user_id": profile["id"], "p_delta": -amount})
     await sb(supabase.table("transactions").insert({
         "user_id": profile["id"], "type": "withdraw", "amount": amount,
-        "currency": currency, "external_id": cid, "status": "completed",
-        "meta": {"payout_id": payout.get("id")}}))
-    return payout
+        "currency": currency, "external_id": cid,
+        "status": "pending", "meta": {}}))
+
+    try:
+        payout = await xrocket_create_payout(tg_id, amount, "GoldCash withdraw", cid, currency)
+        await sb(supabase.table("transactions")
+                 .update({"meta": {"payout_id": payout.get("id"),
+                                    "payout_status": payout.get("status")}})
+                 .eq("external_id", cid))
+        if payout.get("status") in ("completed", "paid", "success"):
+            await sb(supabase.table("transactions")
+                     .update({"status": "completed"}).eq("external_id", cid))
+        return payout
+    except Exception as e:
+        log.exception("xRocket payout failed, refunding")
+        await sb_rpc("change_balance", {"p_user_id": profile["id"], "p_delta": amount})
+        await sb(supabase.table("transactions")
+                 .update({"status": "failed", "meta": {"error": str(e)}})
+                 .eq("external_id", cid))
+        raise
 
 # ================== CRASH LOOP ==================
 async def crash_auto_cashout_watcher(round_id, started_at, crash_point_val):
@@ -2619,8 +2645,11 @@ async def xrocket_webhook(request: Request):
                         f"{ts}.{raw.decode()}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig): raise HTTPException(401, "bad sig")
     event = json.loads(raw)
-    log.info("webhook: %s", event)
-    if event.get("type") == "invoice" and event.get("status") == "paid":
+    log.info("xRocket webhook: %s", event)
+    etype = event.get("type")
+    status = event.get("status")
+
+    if etype == "invoice" and status == "paid":
         cid = (event.get("clientInvoiceId")
                or (event.get("invoice") or {}).get("clientInvoiceId")
                or (event.get("payload") or {}).get("clientInvoiceId"))
@@ -2631,6 +2660,29 @@ async def xrocket_webhook(request: Request):
                 row = tx[0]
                 await sb_rpc("change_balance", {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
                 await sb(supabase.table("transactions").update({"status": "completed"}).eq("id", row["id"]))
+                log.info("✅ deposit credited: %s", cid)
+
+    if etype == "payout":
+        cid = (event.get("clientPayoutId")
+               or (event.get("payout") or {}).get("clientPayoutId")
+               or (event.get("payload") or {}).get("clientPayoutId"))
+        if cid:
+            tx = (await sb(supabase.table("transactions").select("*")
+                           .eq("external_id", str(cid)))).data
+            if tx:
+                row = tx[0]
+                if status in ("completed", "paid", "success"):
+                    await sb(supabase.table("transactions")
+                             .update({"status": "completed"}).eq("id", row["id"]))
+                    log.info("✅ payout completed: %s", cid)
+                elif status in ("failed", "rejected", "cancelled"):
+                    await sb_rpc("change_balance",
+                                 {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
+                    await sb(supabase.table("transactions")
+                             .update({"status": "failed",
+                                      "meta": {"error": event.get("reason", "unknown")}})
+                             .eq("id", row["id"]))
+                    log.warning("❌ payout failed, refunded: %s", cid)
     return {"ok": True}
 
 # ================== CRASH API ==================
