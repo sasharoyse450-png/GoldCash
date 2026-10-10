@@ -13,7 +13,6 @@
   .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
   .grad { background:linear-gradient(135deg,#7c3aed 0%,#3b82f6 100%); }
   .grad-pink { background:linear-gradient(135deg,#ec4899 0%,#8b5cf6 100%); }
-  .grad-gold { background:linear-gradient(135deg,#f59e0b 0%,#ef4444 100%); }
   @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:.7} }
   .pulse-slow { animation:pulse-slow 2s ease-in-out infinite; }
   @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.15)} 100%{transform:scale(1)} }
@@ -37,7 +36,6 @@
     padding:2px 6px; border-radius:6px; font-weight:700; }
   .game-balance { background:rgba(250,204,21,.12); color:#facc15; font-weight:700;
     padding:4px 10px; border-radius:999px; font-size:13px; }
-  /* модалка */
   .modal { position:fixed; inset:0; display:none; background:rgba(0,0,0,.75); align-items:flex-end; z-index:100; }
   .modal.open { display:flex; }
   .modal-box { width:100%; background:rgba(255,255,255,.06); backdrop-filter:blur(12px);
@@ -46,6 +44,14 @@
   #modal-game.open { display:flex; }
   #modal-rules { z-index:9999 !important; }
   #toast { z-index:10000; }
+  @keyframes skeleton-pulse { 0%,100%{opacity:.4} 50%{opacity:.8} }
+  .skeleton { background:rgba(255,255,255,.08); border-radius:8px;
+    animation:skeleton-pulse 1.5s ease-in-out infinite; }
+  .skeleton-row { height:48px; margin-bottom:8px; }
+  @keyframes balUp { 0%{color:#facc15; transform:scale(1)} 50%{color:#4ade80; transform:scale(1.15)} 100%{color:#fff; transform:scale(1)} }
+  @keyframes balDown { 0%{color:#facc15; transform:scale(1)} 50%{color:#ef4444; transform:scale(1.15)} 100%{color:#fff; transform:scale(1)} }
+  .bal-flash-up { animation: balUp .5s ease; }
+  .bal-flash-down { animation: balDown .5s ease; }
 </style>
 </head>
 <body class="text-white min-h-screen">
@@ -71,7 +77,9 @@
       <span class="text-sm font-bold uppercase tracking-wide text-gray-300">Live</span>
     </div>
     <div id="live" class="flex overflow-x-auto no-scrollbar gap-3">
-      <div class="text-gray-500 text-sm px-2">Загрузка…</div>
+      <div class="skeleton shrink-0 w-[150px] h-[56px]"></div>
+      <div class="skeleton shrink-0 w-[150px] h-[56px]"></div>
+      <div class="skeleton shrink-0 w-[150px] h-[56px]"></div>
     </div>
   </section>
 
@@ -101,14 +109,21 @@
   </div>
 </nav>
 
-<!-- DEPOSIT -->
 <div id="modal-deposit" class="modal">
   <div class="modal-box">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-xl font-black">Пополнение</h3>
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
-    <label class="text-sm text-gray-400">Сумма (USDT)</label>
+    <div class="flex items-center gap-2 mb-2">
+      <label class="text-sm text-gray-400">Валюта</label>
+      <select id="deposit-currency" class="bg-white/5 rounded-xl px-3 py-1.5 text-sm outline-none border border-white/10">
+        <option value="USDT">USDT</option><option value="TON">TON</option>
+        <option value="BTC">BTC</option><option value="ETH">ETH</option>
+        <option value="TRX">TRX</option>
+      </select>
+    </div>
+    <label class="text-sm text-gray-400">Сумма</label>
     <input id="deposit-amount" type="number" inputmode="decimal" min="0.1" step="0.01"
       class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500" placeholder="1">
     <div class="flex gap-2 mb-4">
@@ -121,7 +136,6 @@
   </div>
 </div>
 
-<!-- WITHDRAW -->
 <div id="modal-withdraw" class="modal">
   <div class="modal-box">
     <div class="flex justify-between items-center mb-4">
@@ -131,7 +145,15 @@
     <div class="glass rounded-2xl p-3 mb-3 text-xs text-yellow-300">
       ⚠️ Средства приходят на твой аккаунт <b>@xRocket</b>. Если ещё не зарегистрирован — сначала зайди туда.
     </div>
-    <label class="text-sm text-gray-400">Сумма (USDT)</label>
+    <div class="flex items-center gap-2 mb-2">
+      <label class="text-sm text-gray-400">Валюта</label>
+      <select id="withdraw-currency" class="bg-white/5 rounded-xl px-3 py-1.5 text-sm outline-none border border-white/10">
+        <option value="USDT">USDT</option><option value="TON">TON</option>
+        <option value="BTC">BTC</option><option value="ETH">ETH</option>
+        <option value="TRX">TRX</option>
+      </select>
+    </div>
+    <label class="text-sm text-gray-400">Сумма</label>
     <input id="withdraw-amount" type="number" inputmode="decimal" min="0.5" step="0.01"
       class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500" placeholder="1">
     <p id="withdraw-note" class="text-xs text-gray-500 mb-4">Выплата мгновенно на xRocket.</p>
@@ -139,18 +161,20 @@
   </div>
 </div>
 
-<!-- PROFILE -->
 <div id="modal-profile" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-xl font-black">Профиль</h3>
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
-    <div id="profile-body" class="space-y-3"></div>
+    <div id="profile-body" class="space-y-3">
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+    </div>
   </div>
 </div>
 
-<!-- HISTORY -->
 <div id="modal-history" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -165,7 +189,6 @@
   </div>
 </div>
 
-<!-- FAIRNESS -->
 <div id="modal-fair" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -176,7 +199,6 @@
   </div>
 </div>
 
-<!-- TOP -->
 <div id="modal-top" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -188,22 +210,26 @@
       <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold bg-white/10" data-p="week">Неделя</button>
       <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold" data-p="month">Месяц</button>
     </div>
-    <div id="top-body" class="space-y-2"></div>
+    <div id="top-body" class="space-y-2">
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+    </div>
   </div>
 </div>
 
-<!-- FRIENDS -->
 <div id="modal-bonus" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-xl font-black">Друзья и промокод</h3>
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
-    <div id="bonus-body" class="space-y-3"></div>
+    <div id="bonus-body" class="space-y-3">
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+    </div>
   </div>
 </div>
 
-<!-- GAME MODAL -->
 <div id="modal-game">
   <div class="flex items-center justify-between p-3 border-b border-white/5">
     <h3 id="game-title" class="text-lg font-black">Игра</h3>
@@ -216,7 +242,6 @@
   <div id="game-body" class="flex-1 overflow-y-auto no-scrollbar p-4"></div>
 </div>
 
-<!-- RULES -->
 <div id="modal-rules" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -239,10 +264,12 @@ let cfg = {
   min_bet: 0.1, max_bet: 1000, min_deposit: 0.1, min_withdraw: 0.5,
   withdraw_cooldown_min: 15, max_withdraw_daily: 500,
   referral_share: 0.05, rtp: 0.96,
+  currencies: ["USDT","TON","BTC","ETH","TRX"],
   payouts: { dice: 5.76, roulette_rb: 1.92, roulette_dozen: 2.88, roulette_number: 34.56 },
 };
 let currentGame = null;
 let crashPoll = null, crashLocalAnim = null;
+let _displayedBalance = 0;
 
 const RED_NUMS = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 const ROUL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
@@ -281,6 +308,7 @@ async function init() {
   try { cfg = {...cfg, ...(await api("/api/config"))}; } catch {}
   try {
     profile = await api("/api/profile");
+    _displayedBalance = num(profile.balance);
     renderProfile();
     updateWithdrawNote();
   } catch (e) { toast("Ошибка авторизации: " + e.message); }
@@ -292,19 +320,60 @@ function renderProfile() {
   if (gb) gb.innerText = b;
   const name = (profile?.first_name || profile?.username || "?").trim();
   document.getElementById("avatar").innerText = name[0].toUpperCase();
+  // предустановка валюты
+  const cur = profile?.preferred_currency || "USDT";
+  const dc = document.getElementById("deposit-currency");
+  const wc = document.getElementById("withdraw-currency");
+  if (dc) dc.value = cur;
+  if (wc) wc.value = cur;
 }
-function updateBalance(v) {
-  profile.balance = v;
-  const b = num(v).toFixed(2);
-  document.getElementById("balance").innerText = b;
+function updateBalance(v, animate = true) {
+  const old = num(profile?.balance);
+  profile.balance = num(v);
+  const target = num(v);
+  const el = document.getElementById("balance");
   const gb = document.getElementById("game-balance");
-  if (gb) gb.innerText = b;
   const pill = document.getElementById("balance-pill");
-  pill.classList.add("pop"); setTimeout(()=>pill.classList.remove("pop"), 300);
+
+  if (animate && target !== old) {
+    const cls = target > old ? "bal-flash-up" : "bal-flash-down";
+    el.classList.remove("bal-flash-up","bal-flash-down");
+    void el.offsetWidth;
+    el.classList.add(cls);
+    setTimeout(()=>el.classList.remove(cls), 600);
+    if (gb) {
+      gb.classList.remove("bal-flash-up","bal-flash-down");
+      void gb.offsetWidth;
+      gb.classList.add(cls);
+      setTimeout(()=>gb.classList.remove(cls), 600);
+    }
+    pill.classList.add("pop"); setTimeout(()=>pill.classList.remove("pop"), 300);
+  }
+
+  const start = _displayedBalance;
+  const delta = target - start;
+  if (!animate || Math.abs(delta) < 0.01) {
+    _displayedBalance = target;
+    el.innerText = target.toFixed(2);
+    if (gb) gb.innerText = target.toFixed(2);
+    return;
+  }
+  const dur = 400;
+  const t0 = performance.now();
+  function tick(t) {
+    const k = Math.min(1, (t - t0) / dur);
+    const e = 1 - Math.pow(1 - k, 3);
+    const cur = start + delta * e;
+    el.innerText = cur.toFixed(2);
+    if (gb) gb.innerText = cur.toFixed(2);
+    if (k < 1) requestAnimationFrame(tick);
+    else _displayedBalance = target;
+  }
+  requestAnimationFrame(tick);
 }
 function updateWithdrawNote() {
   document.getElementById("withdraw-note").innerHTML =
-    `Мин: ${cfg.min_withdraw} ₮ · Лимит/сутки: ${cfg.max_withdraw_daily} ₮ · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
+    `Мин: ${cfg.min_withdraw} · Лимит/сутки: ${cfg.max_withdraw_daily} · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
 }
 
 async function loadLive() {
@@ -319,7 +388,7 @@ async function loadLive() {
         </div>
         <div class="leading-tight">
           <div class="text-xs text-gray-400">${l.name} · ${l.game}</div>
-          <div class="text-sm font-bold text-green-400">+${l.profit} ₮</div>
+          <div class="text-sm font-bold text-green-400">+${l.profit}</div>
         </div>
         <div class="ml-auto text-xs font-bold text-yellow-400">${l.mult}x</div>
       </div>`).join("");
@@ -346,7 +415,7 @@ function renderGames() {
 
 async function loadLeaderboard(period="week") {
   const body = document.getElementById("top-body");
-  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
   try {
     const data = await api(`/api/leaderboard?period=${period}`);
     if (!data.items.length) { body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Пока пусто</div>`; return; }
@@ -357,11 +426,11 @@ async function loadLeaderboard(period="week") {
           <div class="w-8 text-center text-lg font-black ${i<3?'':'text-gray-500'}">${medals[i] || (i+1)}</div>
           <div>
             <div class="font-bold text-sm">${it.name}</div>
-            <div class="text-[10px] text-gray-400">${it.games} игр · оборот ${it.bets} ₮</div>
+            <div class="text-[10px] text-gray-400">${it.games} игр · ${it.bets}</div>
           </div>
         </div>
         <div class="font-bold ${it.profit >= 0 ? 'text-green-400' : 'text-red-400'}">
-          ${it.profit >= 0 ? '+' : ''}${it.profit} ₮
+          ${it.profit >= 0 ? '+' : ''}${it.profit}
         </div>
       </div>`).join("");
   } catch (e) { body.innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
@@ -369,7 +438,7 @@ async function loadLeaderboard(period="week") {
 
 async function openFriends() {
   const body = document.getElementById("bonus-body");
-  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
   try {
     const [p, ref] = await Promise.all([api("/api/profile"), api("/api/referral")]);
     profile = p; renderProfile();
@@ -379,7 +448,7 @@ async function openFriends() {
         <div class="text-sm text-gray-400 mb-1">👥 Рефералка — <b>${(cfg.referral_share*100).toFixed(0)}%</b> от проигрыша друга</div>
         <div class="flex items-center justify-between mt-2 text-sm">
           <div>Приглашено: <b>${ref.invited_count}</b></div>
-          <div>Заработано: <b class="text-green-400">${num(ref.earnings).toFixed(2)} ₮</b></div>
+          <div>Заработано: <b class="text-green-400">${num(ref.earnings).toFixed(2)}</b></div>
         </div>
         <div class="mt-3 text-[10px] text-gray-500 break-all">${ref.link}</div>
         <div class="grid grid-cols-2 gap-2 mt-3">
@@ -406,7 +475,7 @@ async function openFriends() {
         </div>
       </div>`;
     document.getElementById("ref-copy")?.addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(ref.link); toast("Ссылка скопирована"); }
+      try { await navigator.clipboard.writeText(ref.link); toast("Скопировано"); }
       catch { toast("Скопируй вручную"); }
     });
     document.getElementById("promo-redeem")?.addEventListener("click", async () => {
@@ -414,7 +483,7 @@ async function openFriends() {
       if (!code) return toast("Введи код");
       try {
         const r = await api("/api/promo/redeem", { method:"POST", body:JSON.stringify({ code }) });
-        toast(`✅ +${r.amount} ₮`);
+        toast(`✅ +${r.amount}`);
         updateBalance(num(profile.balance) + num(r.amount));
       } catch (e) { toast(e.message); }
     });
@@ -422,32 +491,11 @@ async function openFriends() {
 }
 
 const RULES = {
-  crash: `
-    <b>💥 Crash</b><br>
-    Множитель растёт с 1.00x. Забирай до того, как он обрушится.<br><br>
-    <b>Формула:</b> краш-точка = (1 - house edge) / (1 - r), r — Provably Fair.<br>
-    <b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%<br>
-    <b>Стратегия:</b> чем дольше держишь — тем выше множитель и риск.`,
-  mines: `
-    <b>💎 Mines</b><br>
-    Поле 5×5. Под клетками — мины. Открывай безопасные, множитель растёт.<br><br>
-    <b>Множитель:</b> (1 - house edge) / P(безопасно k из 25)<br>
-    <b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%<br>
-    <b>Чем больше мин</b> — тем выше множитель, но и риск выше.`,
-  roulette: `
-    <b>🎡 Рулетка (европейская)</b><br>
-    Числа 0–36. Ставки:<br>
-    • Красное/Чёрное/Чёт/Нечёт — ×${cfg.payouts.roulette_rb}<br>
-    • Дюжины — ×${cfg.payouts.roulette_dozen}<br>
-    • Число — ×${cfg.payouts.roulette_number}<br><br>
-    <b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
-  dice: `
-    <b>🎲 Кубик (в боте)</b><br>
-    Выбери число 1–6. Бот бросит кубик Telegram.<br>
-    Если выпадет твоё — выплата ×${cfg.payouts.dice}.<br><br>
-    <b>RTP:</b> ${(cfg.payouts.dice/6*100).toFixed(2)}%`,
+  crash: `<b>💥 Crash</b><br>Множитель растёт. Забирай до краша.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
+  mines: `<b>💎 Mines</b><br>5×5, мины. Множитель растёт с каждой безопасной.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
+  roulette: `<b>🎡 Рулетка</b><br>RB ×${cfg.payouts.roulette_rb}, дюжина ×${cfg.payouts.roulette_dozen}, число ×${cfg.payouts.roulette_number}<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
+  dice: `<b>🎲 Кубик</b><br>Число 1-6, ×${cfg.payouts.dice}<br><b>RTP:</b> ${(cfg.payouts.dice/6*100).toFixed(2)}%`,
 };
-
 function openRules(game) {
   const body = document.getElementById("rules-body");
   const items = game ? [game] : ["crash","mines","roulette","dice"];
@@ -462,7 +510,7 @@ document.getElementById("btn-rules-game").addEventListener("click", (e) => {
 
 async function loadHistory(tab="games") {
   const body = document.getElementById("history-body");
-  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
   try {
     if (tab === "games") {
       const data = await api("/api/history/games");
@@ -470,14 +518,10 @@ async function loadHistory(tab="games") {
       body.innerHTML = data.map(r => {
         const win = num(r.profit) > 0;
         return `<div class="glass rounded-2xl px-3 py-2 flex justify-between items-center text-sm">
-          <div>
-            <div class="font-bold capitalize">${r.game_type}</div>
-            <div class="text-xs text-gray-400">${new Date(r.created_at).toLocaleString("ru-RU")}</div>
-          </div>
-          <div class="text-right">
-            <div class="text-xs text-gray-400">Ставка ${num(r.bet_amount).toFixed(2)}</div>
-            <div class="font-bold ${win?'text-green-400':'text-red-400'}">${win?'+':''}${num(r.profit).toFixed(2)} ₮</div>
-          </div>
+          <div><div class="font-bold capitalize">${r.game_type}</div>
+            <div class="text-xs text-gray-400">${new Date(r.created_at).toLocaleString("ru-RU")}</div></div>
+          <div class="text-right"><div class="text-xs text-gray-400">Ставка ${num(r.bet_amount).toFixed(2)}</div>
+            <div class="font-bold ${win?'text-green-400':'text-red-400'}">${win?'+':''}${num(r.profit).toFixed(2)}</div></div>
         </div>`;
       }).join("");
     } else {
@@ -488,11 +532,9 @@ async function loadHistory(tab="games") {
       body.innerHTML = data.map(r => {
         const plus = ["deposit","win","bonus","ref_reward"].includes(r.type);
         return `<div class="glass rounded-2xl px-3 py-2 flex justify-between items-center text-sm">
-          <div>
-            <div class="font-bold">${L[r.type] || r.type}</div>
-            <div class="text-xs text-gray-400">${new Date(r.created_at).toLocaleString("ru-RU")} · ${r.status}</div>
-          </div>
-          <div class="font-bold ${plus?'text-green-400':'text-red-400'}">${plus?'+':'-'}${num(r.amount).toFixed(2)} ₮</div>
+          <div><div class="font-bold">${L[r.type] || r.type}</div>
+            <div class="text-xs text-gray-400">${new Date(r.created_at).toLocaleString("ru-RU")} · ${r.status}</div></div>
+          <div class="font-bold ${plus?'text-green-400':'text-red-400'}">${plus?'+':'-'}${num(r.amount).toFixed(2)}</div>
         </div>`;
       }).join("");
     }
@@ -501,7 +543,7 @@ async function loadHistory(tab="games") {
 
 async function loadFairness() {
   const body = document.getElementById("fair-body");
-  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div>`;
   try {
     const data = await api("/api/fairness");
     if (!data.length) { body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Пока нет раундов</div>`; return; }
@@ -509,7 +551,7 @@ async function loadFairness() {
       <div class="glass rounded-2xl p-3 text-xs space-y-1">
         <div class="flex justify-between items-center">
           <span class="font-bold text-sm capitalize">${r.game} · ${num(r.bet).toFixed(2)}</span>
-          <span class="font-bold ${num(r.profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${num(r.profit)>=0?'+':''}${num(r.profit).toFixed(2)} ₮</span>
+          <span class="font-bold ${num(r.profit) >= 0 ? 'text-green-400' : 'text-red-400'}">${num(r.profit)>=0?'+':''}${num(r.profit).toFixed(2)}</span>
         </div>
         <div class="text-gray-500">${new Date(r.created_at).toLocaleString("ru-RU")} · nonce ${r.nonce ?? '—'}</div>
         <div class="font-mono break-all text-[10px] text-gray-400">seed: ${r.server_seed || '—'}</div>
@@ -522,8 +564,7 @@ async function loadFairness() {
       out.innerHTML = "Проверка…";
       try {
         const v = await api(`/api/fairness/verify/${b.dataset.id}`);
-        out.innerHTML = `
-          <div class="text-gray-400">Пересчитано:</div>
+        out.innerHTML = `<div class="text-gray-400">Пересчитано:</div>
           <div class="font-mono text-[10px] break-all">${JSON.stringify(v.recomputed)}</div>
           <div class="text-green-400 font-bold mt-1">✔ Совпадает</div>`;
       } catch (e) { out.innerHTML = `<span class="text-red-400">${e.message}</span>`; }
@@ -533,7 +574,7 @@ async function loadFairness() {
 
 async function openProfile() {
   const body = document.getElementById("profile-body");
-  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
   try {
     const p = await api("/api/profile"); profile = p; renderProfile();
     const s = p.stats || {};
@@ -546,39 +587,27 @@ async function openProfile() {
         </div>
         <div class="mt-2 font-bold text-lg">${p.first_name || p.username || "anon"}</div>
         <div class="text-sm text-gray-400">@${p.username || "—"}</div>
-        <div class="mt-2 text-2xl font-black text-yellow-400">${num(p.balance).toFixed(2)} ₮</div>
+        <div class="mt-2 text-2xl font-black text-yellow-400">${num(p.balance).toFixed(2)} ${p.preferred_currency || "USDT"}</div>
       </div>
       <div class="grid grid-cols-2 gap-2">
-        <div class="glass rounded-2xl p-3 text-center">
-          <div class="text-xs text-gray-400">📥 Депозиты</div>
-          <div class="font-bold text-lg text-green-400">${g("deposits").toFixed(2)}</div>
-        </div>
-        <div class="glass rounded-2xl p-3 text-center">
-          <div class="text-xs text-gray-400">📤 Выводы</div>
-          <div class="font-bold text-lg text-red-400">${g("withdrawals").toFixed(2)}</div>
-        </div>
-        <div class="glass rounded-2xl p-3 text-center">
-          <div class="text-xs text-gray-400">🎯 Ставок</div>
-          <div class="font-bold text-lg">${g("total_wagered").toFixed(2)}</div>
-        </div>
-        <div class="glass rounded-2xl p-3 text-center">
-          <div class="text-xs text-gray-400">🏆 Выигрышей</div>
-          <div class="font-bold text-lg text-green-400">${g("wins").toFixed(2)}</div>
-        </div>
-        <div class="glass rounded-2xl p-3 text-center">
-          <div class="text-xs text-gray-400">🎮 Игр</div>
-          <div class="font-bold text-lg">${g("total_games")}</div>
-        </div>
-        <div class="glass rounded-2xl p-3 text-center">
-          <div class="text-xs text-gray-400">📊 Профит</div>
-          <div class="font-bold text-lg ${profitColor}">${g("total_profit")>=0?'+':''}${g("total_profit").toFixed(2)}</div>
-        </div>
+        <div class="glass rounded-2xl p-3 text-center"><div class="text-xs text-gray-400">📥 Депозиты</div>
+          <div class="font-bold text-lg text-green-400">${g("deposits").toFixed(2)}</div></div>
+        <div class="glass rounded-2xl p-3 text-center"><div class="text-xs text-gray-400">📤 Выводы</div>
+          <div class="font-bold text-lg text-red-400">${g("withdrawals").toFixed(2)}</div></div>
+        <div class="glass rounded-2xl p-3 text-center"><div class="text-xs text-gray-400">🎯 Ставок</div>
+          <div class="font-bold text-lg">${g("total_wagered").toFixed(2)}</div></div>
+        <div class="glass rounded-2xl p-3 text-center"><div class="text-xs text-gray-400">🏆 Выигрышей</div>
+          <div class="font-bold text-lg text-green-400">${g("wins").toFixed(2)}</div></div>
+        <div class="glass rounded-2xl p-3 text-center"><div class="text-xs text-gray-400">🎮 Игр</div>
+          <div class="font-bold text-lg">${g("total_games")}</div></div>
+        <div class="glass rounded-2xl p-3 text-center"><div class="text-xs text-gray-400">📊 Профит</div>
+          <div class="font-bold text-lg ${profitColor}">${g("total_profit")>=0?'+':''}${g("total_profit").toFixed(2)}</div></div>
       </div>
       <div class="glass rounded-2xl p-3 text-xs space-y-1">
         <div class="text-gray-400 font-bold mb-1">🛡 Provably Fair</div>
         <div><span class="text-gray-400">client_seed:</span> <span class="font-mono break-all">${p.client_seed || "—"}</span></div>
         <div><span class="text-gray-400">nonce:</span> ${p.nonce ?? 0}</div>
-        <div><span class="text-gray-400">👥 реф-заработок:</span> ${num(p.ref_earnings).toFixed(2)} ₮</div>
+        <div><span class="text-gray-400">👥 реф-заработок:</span> ${num(p.ref_earnings).toFixed(2)}</div>
       </div>
       <div class="grid grid-cols-2 gap-2">
         <button id="p-withdraw" class="grad w-full rounded-2xl py-3 font-bold">Вывести</button>
@@ -593,18 +622,19 @@ async function openProfile() {
   } catch (e) { body.innerHTML = `<div class="text-red-400 p-4">${e.message}</div>`; }
 }
 
-// ===== DEPOSIT / WITHDRAW =====
 document.getElementById("btn-deposit").addEventListener("click", () => openModal("modal-deposit"));
 document.querySelectorAll(".deposit-quick").forEach(b =>
   b.addEventListener("click", () => document.getElementById("deposit-amount").value = b.dataset.v));
 
 document.getElementById("do-deposit").addEventListener("click", async () => {
   const amount = Number(document.getElementById("deposit-amount").value);
+  const currency = document.getElementById("deposit-currency").value;
   const min = cfg.min_deposit || 0.1;
-  if (!amount || amount < min) return toast(`Минимум ${min} USDT`);
+  if (!amount || amount < min) return toast(`Минимум ${min}`);
   haptic();
   try {
-    const r = await api("/api/payments/deposit", { method:"POST", body:JSON.stringify({ amount }) });
+    const r = await api("/api/payments/deposit", { method:"POST",
+      body: JSON.stringify({ amount, currency }) });
     closeModal("modal-deposit");
     tg.openLink(r.link);
     toast("Открываем оплату…");
@@ -613,12 +643,14 @@ document.getElementById("do-deposit").addEventListener("click", async () => {
 
 document.getElementById("do-withdraw").addEventListener("click", async () => {
   const amount = Number(document.getElementById("withdraw-amount").value);
+  const currency = document.getElementById("withdraw-currency").value;
   const min = cfg.min_withdraw || 0.5;
-  if (!amount || amount < min) return toast(`Минимум ${min} USDT`);
+  if (!amount || amount < min) return toast(`Минимум ${min}`);
   if (amount > num(profile?.balance)) return toast("Недостаточно средств");
   haptic("medium");
   try {
-    await api("/api/payments/withdraw", { method:"POST", body:JSON.stringify({ amount }) });
+    await api("/api/payments/withdraw", { method:"POST",
+      body: JSON.stringify({ amount, currency }) });
     closeModal("modal-withdraw");
     toast("Выплата отправлена");
     updateBalance(num(profile.balance) - amount);
@@ -678,7 +710,6 @@ function validateBet(v) {
   return true;
 }
 
-// ===== CRASH =====
 function renderCrash() {
   const body = document.getElementById("game-body");
   body.innerHTML = `
@@ -722,7 +753,7 @@ function renderCrash() {
     haptic("medium");
     try {
       const r = await api("/api/crash/cashout", { method:"POST" });
-      toast(`Забрано ×${r.mult} = +${num(r.profit).toFixed(2)} ₮`);
+      toast(`Забрано ×${r.mult} = +${num(r.profit).toFixed(2)}`);
       updateBalance(num(profile.balance) + num(r.payout));
       refreshCrashState();
     } catch (e) { toast(e.message); }
@@ -784,9 +815,9 @@ async function refreshCrashState() {
     betBox.classList.toggle("hidden", !canBet);
     cashBtn.classList.toggle("hidden", !canCash);
     if (my) {
-      if (my.status === "active") myStatus.innerHTML = `<span class="text-yellow-400">Ставка ${num(my.amount).toFixed(2)} ₮</span>`;
-      else if (my.status === "cashed") myStatus.innerHTML = `<span class="text-green-400">✅ Забрано ×${num(my.cashout_mult).toFixed(2)} · +${num(my.payout - my.amount).toFixed(2)} ₮</span>`;
-      else if (my.status === "lost") myStatus.innerHTML = `<span class="text-red-400">❌ −${num(my.amount).toFixed(2)} ₮</span>`;
+      if (my.status === "active") myStatus.innerHTML = `<span class="text-yellow-400">Ставка ${num(my.amount).toFixed(2)}</span>`;
+      else if (my.status === "cashed") myStatus.innerHTML = `<span class="text-green-400">✅ ×${num(my.cashout_mult).toFixed(2)} · +${num(my.payout - my.amount).toFixed(2)}</span>`;
+      else if (my.status === "lost") myStatus.innerHTML = `<span class="text-red-400">❌ −${num(my.amount).toFixed(2)}</span>`;
     } else if (st.status === "running") myStatus.innerHTML = `<span class="text-gray-500">Ты не в этом раунде</span>`;
     else myStatus.innerHTML = "";
     const listEl = body.querySelector("#crash-bets-list");
@@ -798,7 +829,7 @@ async function refreshCrashState() {
       } else {
         listEl.innerHTML = st.bets.map(b => {
           let right = ""; let cls = "text-gray-400";
-          if (b.status === "active") { right = `${num(b.amount).toFixed(2)} ₮`; cls = "text-yellow-400"; }
+          if (b.status === "active") { right = `${num(b.amount).toFixed(2)}`; cls = "text-yellow-400"; }
           else if (b.status === "cashed") { right = `×${num(b.cashout_mult).toFixed(2)} → +${num(b.payout - b.amount).toFixed(2)}`; cls = "text-green-400"; }
           else if (b.status === "lost") { right = `−${num(b.amount).toFixed(2)}`; cls = "text-red-400"; }
           return `<div class="flex items-center justify-between glass rounded-xl px-3 py-2 text-sm ${b.is_me?'ring-1 ring-yellow-400/40':''}">
@@ -813,11 +844,10 @@ async function refreshCrashState() {
         }).join("");
       }
     }
-    updateBalance(num(st.balance));
+    updateBalance(num(st.balance), false);
   } catch (e) {}
 }
 
-// ===== MINES =====
 function renderMines() {
   const body = document.getElementById("game-body");
   let minesCount = 3;
@@ -886,7 +916,7 @@ function renderMines() {
       body.querySelector("#mines-start").classList.remove("hidden");
       body.querySelector("#mines-bet-wrap").classList.remove("hidden");
       updateBalance(num(profile.balance) + num(r.payout));
-      body.querySelector("#mines-result").innerHTML = `<span class="text-green-400">+${num(r.profit).toFixed(2)} ₮ (${r.mult}x)</span>`;
+      body.querySelector("#mines-result").innerHTML = `<span class="text-green-400">+${num(r.profit).toFixed(2)} (${r.mult}x)</span>`;
       renderGrid(r.positions, r.positions, false);
       body.querySelector("#mines-mult").innerText = "1.00";
       body.querySelector("#mines-revealed").innerText = "0";
@@ -919,7 +949,6 @@ function renderMines() {
   }
 }
 
-// ===== ROULETTE =====
 function renderRoulette() {
   const body = document.getElementById("game-body");
   const SEC = 37, ANG = 360 / SEC;
@@ -963,7 +992,7 @@ function renderRoulette() {
           <button id="roul-refresh" class="text-xs text-gray-400 underline">обновить</button>
         </div>
         <div id="roul-bets" class="space-y-1.5 max-h-[220px] overflow-y-auto no-scrollbar">
-          <div class="text-gray-500 text-sm text-center py-3">Загрузка…</div>
+          <div class="skeleton skeleton-row"></div>
         </div>
       </div>
     </div>`;
@@ -991,7 +1020,7 @@ function renderRoulette() {
     try {
       const data = await api("/api/roulette/bets");
       if (!data.length) { wrap.innerHTML = `<div class="text-gray-500 text-sm text-center py-3">Пока нет ставок</div>`; return; }
-      const BT = { red:"🔴 Красное", black:"⚫ Чёрное", odd:"Нечёт", even:"Чёт", dozen1:"1–12", dozen2:"13–24", dozen3:"25–36", number:"Число" };
+      const BT = { red:"🔴", black:"⚫", odd:"Нечёт", even:"Чёт", dozen1:"1–12", dozen2:"13–24", dozen3:"25–36", number:"Число" };
       wrap.innerHTML = data.map(b => `
         <div class="flex items-center justify-between glass rounded-xl px-3 py-2 text-sm">
           <div class="flex items-center gap-2 min-w-0">
@@ -1000,7 +1029,7 @@ function renderRoulette() {
             </div>
             <div class="min-w-0">
               <div class="font-semibold truncate">${b.name}</div>
-              <div class="text-[10px] text-gray-400">${BT[b.bet_type] || b.bet_type || ""} · ${num(b.amount).toFixed(2)} ₮</div>
+              <div class="text-[10px] text-gray-400">${BT[b.bet_type] || b.bet_type || ""} · ${num(b.amount).toFixed(2)}</div>
             </div>
           </div>
           <div class="text-right shrink-0 ml-2">
@@ -1035,10 +1064,11 @@ function renderRoulette() {
         center.innerHTML = `<span class="${colorClass}">${r.number}</span>`;
         const res = body.querySelector("#roul-result");
         if (r.win) {
-          res.innerHTML = `<span class="text-green-400">✅ +${num(r.profit).toFixed(2)} ₮</span>`;
+          res.innerHTML = `<span class="text-green-400">✅ +${num(r.profit).toFixed(2)}</span>`;
           updateBalance(num(profile.balance) + num(r.payout));
         } else {
-          res.innerHTML = `<span class="text-red-400">❌ −${num(bet).toFixed(2)} ₮</span>`;
+          res.innerHTML = `<span class="text-red-400">❌ −${num(bet).toFixed(2)}</span>`;
+          updateBalance(num(profile.balance));
         }
         spinBtn.disabled = false;
         loadRoulBets();
