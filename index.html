@@ -310,6 +310,56 @@
     color: var(--accent); font-size: 16px;
   }
 
+  /* --- Hi-Lo hexagons --- */
+  .hilo-hex {
+    display: block; width: 100%;
+    padding: 16px 30px 16px 18px;
+    border: none; cursor: pointer;
+    color: #fff;
+    text-align: left;
+    font-weight: 800;
+    clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 50%, calc(100% - 22px) 100%, 0 100%);
+    transition: transform .15s ease, filter .15s ease;
+    position: relative;
+  }
+  .hilo-hex:active:not(:disabled) { transform: scale(.97); }
+  .hilo-hex:disabled { opacity: .55; cursor: not-allowed; }
+  .hilo-hex-higher {
+    background: linear-gradient(135deg, #facc15 0%, #eab308 100%);
+    color: #2a1d00;
+    box-shadow: 0 4px 14px rgba(234,179,8,.3);
+  }
+  .hilo-hex-lower {
+    background: linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(124,58,237,.3);
+  }
+  .hilo-hex-label { font-size: 13px; font-weight: 900; letter-spacing: -.01em; }
+  .hilo-hex-info {
+    font-size: 12px; font-weight: 700; margin-top: 3px;
+    opacity: .85; font-variant-numeric: tabular-nums;
+  }
+
+  .hilo-card {
+    width: 110px; height: 150px;
+    background: #f4f5f7; color: #0a0d12;
+    border-radius: 10px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-weight: 900;
+    box-shadow: 0 6px 18px rgba(0,0,0,.5);
+    position: relative;
+    animation: cardIn .3s cubic-bezier(.34, 1.56, .64, 1) both;
+  }
+  .hilo-card.red { color: #dc2626; }
+  .hilo-card .rank { font-size: 44px; line-height: .95; }
+  .hilo-card .suit { font-size: 30px; line-height: 1; margin-top: 4px; }
+  .hilo-card.back {
+    background: repeating-linear-gradient(45deg, #1e2a4a, #1e2a4a 6px, #16203a 6px, #16203a 12px);
+    color: var(--accent);
+    font-size: 36px;
+  }
+
   @keyframes balUp { 0%{color:var(--text)} 50%{color:var(--green)} 100%{color:var(--text)} }
   @keyframes balDown { 0%{color:var(--text)} 50%{color:var(--red)} 100%{color:var(--text)} }
   .bal-flash-up { animation: balUp .4s ease; }
@@ -663,7 +713,7 @@ let _lastVipSig = "";
 const RED_NUMS = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 const ROUL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
 const DICE_EMOJI = ["","⚀","⚁","⚂","⚃","⚄","⚅"];
-const HILO_NAMES = {2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A"};
+const HILO_NAMES = {1:"A",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K"};
 const VIP_COLORS = { bronze: "#cd7f32", silver: "#c0c0c0", gold: "#fbbf24", platinum: "#e5e7eb", diamond: "#a78bfa" };
 
 function toast(msg, ms=2200) {
@@ -789,6 +839,9 @@ function renderProfile() {
   const sig = `${bonus.bonus_active}|${(bonus.bonus_allowed_games||[]).join(",")}`;
   const bonusChanged = sig !== _lastBonusSig;
   _lastBonusSig = sig;
+
+  const vsig = `${vip.tier}|${vip.total_wagered}`;
+  _lastVipSig = vsig;
 
   if (bonusChanged && typeof renderGames === "function") renderGames();
 }
@@ -976,7 +1029,7 @@ const RULES = {
   blackjack: `<b>🃏 Blackjack</b><br>Набери 21 или ближе чем дилер. Блэкджек ×2.5.<br><b>RTP:</b> ~96%`,
   tower: `<b>🗼 Tower</b><br>6 уровней по 3 двери. Одна мина. ×1.44 за уровень.<br><b>RTP:</b> 96%`,
   keno: `<b>🎯 Keno</b><br>Выбери 1-10 чисел из 80. Рисуется 20. Чем больше угадал — тем выше выплата.<br><b>RTP:</b> ~95%`,
-  hilo: `<b>🃏 Hi-Lo</b><br>Угадай — следующая карта больше или меньше. Множитель растёт с каждым шагом.<br><b>RTP:</b> ~96%`,
+  hilo: `<b>🃏 Hi-Lo</b><br>Угадай — следующая карта выше/та же или ниже/та же.<br>Шансы: <b>Выше/Та же</b> и <b>Ниже/Та же</b>. Та же карта идёт в обе стороны.<br><b>RTP:</b> ~99% за раунд`,
   scratch: `<b>🎟 Scratch</b><br>6 билетов с разной ставкой. Сотри 9 ячеек пальцем. Три одинаковых множителя = приз.<br><b>RTP:</b> ~94%`,
 };
 
@@ -2251,81 +2304,195 @@ function renderKeno() {
   };
 }
 
-/* ==================== HI-LO ==================== */
+/* ==================== HI-LO (2-mode hexagons) ==================== */
 function renderHilo() {
   const body = document.getElementById("game-body");
-  let active = false, current = 7, level = 0, mult = 1.0;
+  const SUITS = ["♠","♥","♦","♣"];
+  const suitColors = { "♠":"#0a0d12", "♥":"#dc2626", "♦":"#dc2626", "♣":"#0a0d12" };
+
+  let active = false;
+  let current = null;
+  let currentSuit = null;
+  let level = 0;
+  let mult = 1.0;
+  let probs = { higher: 0, lower: 0 };
+  let mults = { higher: 0, lower: 0 };
+  let preview = null;
+  let previewSuit = null;
+  let bet = 0;
+  let busy = false;
+
+  function pickPreview() {
+    preview = 1 + Math.floor(Math.random() * 13);
+    previewSuit = SUITS[Math.floor(Math.random() * 4)];
+  }
+  pickPreview();
+
+  function computeLocalProbs(rank) {
+    if (!rank) return { probs: {higher:0, lower:0}, mults: {higher:0, lower:0} };
+    const r = Math.max(1, Math.min(13, rank));
+    const pH = (13 - r + 1) / 13;
+    const pL = r / 13;
+    return {
+      probs: { higher: pH, lower: pL },
+      mults: { higher: Math.round((0.99 / pH) * 100) / 100, lower: Math.round((0.99 / pL) * 100) / 100 },
+    };
+  }
+
+  function cardHtml(rank, suit, isBack) {
+    if (isBack || !rank) return `<div class="hilo-card back">?</div>`;
+    const name = HILO_NAMES[rank] || rank;
+    const col = suitColors[suit] || "#0a0d12";
+    return `<div class="hilo-card" style="color:${col}">
+      <div class="rank">${name}</div>
+      <div class="suit">${suit}</div>
+    </div>`;
+  }
 
   function draw() {
+    const showCard = active ? current : preview;
+    const showSuit = active ? currentSuit : previewSuit;
+    const localP = computeLocalProbs(showCard);
+    const pH = active ? probs.higher : localP.probs.higher;
+    const pL = active ? probs.lower  : localP.probs.lower;
+    const mH = active ? mults.higher : localP.mults.higher;
+    const mL = active ? mults.lower  : localP.mults.lower;
+
+    const cashAmount = bet > 0 ? (bet * mult) : 0;
+
     body.innerHTML = `
       <div class="flex flex-col gap-3">
-        <div class="rounded-2xl flex flex-col items-center justify-center min-h-[180px]"
-             style="background:var(--surface); border:1px solid var(--border);">
-          <div class="text-xs" style="color:var(--muted);">КАРТА</div>
-          <div class="bj-card" style="width:90px; height:126px; font-size:36px; margin-top:8px;">${HILO_NAMES[current] || current}</div>
+        <div class="rounded-2xl p-4 flex flex-col items-center justify-center"
+             style="background:var(--surface); border:1px solid var(--border); min-height:200px;">
+          ${cardHtml(showCard, showSuit, !showCard)}
         </div>
-        <div class="flex justify-between text-sm" style="color:var(--muted);">
-          <span>Уровень: <b style="color:var(--text);">${level}</b></span>
-          <span>Множитель: <b style="color:var(--green);">×${mult.toFixed(2)}</b></span>
+
+        <div class="grid grid-cols-2 gap-3">
+          <button id="hilo-higher" class="hilo-hex hilo-hex-higher" ${active?'':'disabled'}>
+            <div class="hilo-hex-label">Выше / Та же</div>
+            <div class="hilo-hex-info">${(pH*100).toFixed(2)}% | ×${mH}</div>
+          </button>
+          <button id="hilo-lower" class="hilo-hex hilo-hex-lower" ${active?'':'disabled'}>
+            <div class="hilo-hex-label">Ниже / Та же</div>
+            <div class="hilo-hex-info">${(pL*100).toFixed(2)}% | ×${mL}</div>
+          </button>
         </div>
-        <div id="hilo-result" class="text-center text-sm"></div>
+
+        ${active ? `
+          <div class="flex justify-between text-sm" style="color:var(--muted); padding:0 4px;">
+            <span>Уровень: <b style="color:var(--text);">${level}</b></span>
+            <span>Множитель: <b style="color:var(--green);">×${mult.toFixed(2)}</b></span>
+          </div>
+        ` : ``}
+
         <div id="hilo-controls"></div>
+        <div id="hilo-result" class="text-center text-sm"></div>
       </div>`;
-    const ctl = body.querySelector("#hilo-controls");
+
+    const controls = body.querySelector("#hilo-controls");
+
     if (!active) {
-      ctl.innerHTML = `${betInputRow("hilo-bet", 0.5)}<button id="hilo-start" class="submit mt-3">Начать</button>`;
+      controls.innerHTML = `
+        ${betInputRow("hilo-bet", 0.5)}
+        <button id="hilo-start" class="submit" style="background:#3b82f6; color:#fff; margin-top:12px;">
+          Ставка
+        </button>`;
       const betEl = () => body.querySelector("#hilo-bet");
       wireBet(body, betEl);
-      ctl.querySelector("#hilo-start").onclick = async () => {
-        const bet = Number(betEl().value);
-        if (!validateBet(bet)) return;
+      controls.querySelector("#hilo-start").onclick = async () => {
+        if (busy) return;
+        const b = Number(betEl().value);
+        if (!validateBet(b)) return;
+        busy = true;
         haptic("medium");
+        const btn = controls.querySelector("#hilo-start");
+        btn.disabled = true;
         try {
-          const r = await api("/api/games/hilo/start", {method:"POST", body:JSON.stringify({bet})});
-          updateBalance(num(profile.balance) - bet);
-          active = true; current = r.current; level = 0; mult = 1.0;
+          const r = await api("/api/games/hilo/start", { method:"POST", body: JSON.stringify({ bet: b }) });
+          updateBalance(num(profile.balance) - b);
+          active = true;
+          current = r.current;
+          currentSuit = SUITS[Math.floor(Math.random() * 4)];
+          level = r.level || 0;
+          mult = r.mult || 1.0;
+          probs = r.probs || probs;
+          mults = r.mults || mults;
+          bet = b;
           draw();
-        } catch (e) { toast(e.message); }
+        } catch (e) {
+          toast(e.message);
+          btn.disabled = false;
+        } finally {
+          busy = false;
+        }
       };
     } else {
-      ctl.innerHTML = `
-        <div class="grid grid-cols-2 gap-2">
-          <button id="hilo-lower" class="submit" style="background:#ef4444; color:#fff;">⬇️ Меньше</button>
-          <button id="hilo-higher" class="submit submit-green">⬆️ Больше</button>
-        </div>
-        <button id="hilo-cashout" class="submit mt-2"
-                style="background:var(--surface); color:var(--text); border:1px solid var(--border-hi);">
-          💰 Забрать ×${mult.toFixed(2)}
+      controls.innerHTML = `
+        <button id="hilo-cashout" class="submit"
+                style="background:linear-gradient(135deg,#22c55e,#10b981); color:#031b12;">
+          Забрать · ${cashAmount.toFixed(2)} ₮
         </button>`;
-      const guess = async dir => {
-        haptic();
-        try {
-          const r = await api("/api/games/hilo/guess", {method:"POST", body:JSON.stringify({direction: dir})});
-          if (r.lost) {
-            body.querySelector("#hilo-result").innerHTML =
-              `<span style="color:var(--red); font-weight:700;">💥 ${HILO_NAMES[r.current]} — проигрыш</span>`;
-            updateBalance(num(profile.balance));
-            active = false;
-            setTimeout(() => { level = 0; mult = 1.0; current = 7; draw(); }, 1400);
-          } else {
-            current = r.current; level = r.level; mult = r.mult;
-            draw();
-          }
-        } catch (e) { toast(e.message); }
-      };
-      ctl.querySelector("#hilo-lower").onclick = () => guess("lower");
-      ctl.querySelector("#hilo-higher").onclick = () => guess("higher");
-      ctl.querySelector("#hilo-cashout").onclick = async () => {
+      controls.querySelector("#hilo-cashout").onclick = async () => {
+        if (busy) return;
+        busy = true;
         haptic("medium");
+        const btn = controls.querySelector("#hilo-cashout");
+        btn.disabled = true;
         try {
-          const r = await api("/api/games/hilo/cashout", {method:"POST"});
+          const r = await api("/api/games/hilo/cashout", { method:"POST" });
           updateBalance(num(profile.balance) + num(r.payout));
           body.querySelector("#hilo-result").innerHTML =
-            `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)} (×${r.mult})</span>`;
-          active = false; level = 0; mult = 1.0;
-          setTimeout(() => draw(), 1400);
-        } catch (e) { toast(e.message); }
+            `<span style="color:var(--green); font-weight:700;">Забрано +${num(r.profit).toFixed(2)} ₮ (×${r.mult})</span>`;
+          active = false;
+          current = null;
+          pickPreview();
+          setTimeout(() => { level = 0; mult = 1.0; bet = 0; draw(); }, 1500);
+        } catch (e) {
+          toast(e.message);
+          btn.disabled = false;
+        } finally {
+          busy = false;
+        }
       };
+
+      const guess = async (dir) => {
+        if (busy) return;
+        busy = true;
+        haptic();
+        try {
+          const r = await api("/api/games/hilo/guess", { method:"POST", body: JSON.stringify({ direction: dir }) });
+          if (r.lost) {
+            body.querySelector("#hilo-result").innerHTML =
+              `<span style="color:var(--red); font-weight:700;">💥 ${HILO_NAMES[r.current] || r.current} — проигрыш</span>`;
+            updateBalance(num(profile.balance));
+            active = false;
+            current = r.current;
+            currentSuit = SUITS[Math.floor(Math.random() * 4)];
+            setTimeout(() => {
+              current = null;
+              level = 0;
+              mult = 1.0;
+              bet = 0;
+              pickPreview();
+              draw();
+            }, 1500);
+          } else {
+            current = r.current;
+            currentSuit = SUITS[Math.floor(Math.random() * 4)];
+            level = r.level;
+            mult = r.mult;
+            probs = r.probs || probs;
+            mults = r.mults || mults;
+            draw();
+          }
+        } catch (e) {
+          toast(e.message);
+        } finally {
+          busy = false;
+        }
+      };
+      body.querySelector("#hilo-higher").onclick = () => guess("higher");
+      body.querySelector("#hilo-lower").onclick = () => guess("lower");
     }
   }
 
@@ -2333,14 +2500,22 @@ function renderHilo() {
   (async () => {
     try {
       const s = await api("/api/games/hilo/state");
-      if (s.active) { active = true; current = s.current; level = s.level; mult = s.mult; }
-      else { active = false; current = 7; level = 0; mult = 1.0; }
-    } catch { active = false; }
+      if (s.active) {
+        active = true;
+        current = s.current;
+        currentSuit = SUITS[Math.floor(Math.random() * 4)];
+        level = s.level;
+        mult = s.mult;
+        bet = s.bet || 0;
+        probs = s.probs || probs;
+        mults = s.mults || mults;
+      }
+    } catch {}
     draw();
   })();
 }
 
-/* ==================== SCRATCH (9-cell drag, always triplet) ==================== */
+/* ==================== SCRATCH (9-cell, always triplet) ==================== */
 function renderScratch() {
   const body = document.getElementById("game-body");
 
@@ -2599,7 +2774,6 @@ function renderScratch() {
             total++;
             if (data[i] < 50) transparent++;
           }
-          // порог 80%
           if (total > 0 && transparent / total > 0.80) revealBoard();
         } catch (_) {}
       }
@@ -2648,7 +2822,6 @@ function renderScratch() {
       setTimeout(() => { canvas.style.display = "none"; }, 400);
     }
 
-    // всегда ищем триплет (даже 0x 0x 0x)
     const counts = {};
     currentCells.forEach(c => counts[c] = (counts[c] || 0) + 1);
     let winSym = null;
@@ -2674,7 +2847,6 @@ function renderScratch() {
         el.style.color = "rgba(255,255,255,.5)";
         el.style.boxShadow = "none";
       } else {
-        // оставляем базовые цвета, но делаем чуть тусклее
         const st = cellStyle(sym);
         el.style.background = st.bg;
         el.style.border = st.bd;
