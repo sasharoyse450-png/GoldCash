@@ -207,48 +207,42 @@ KENO_PAYOUTS = {
     10: {0: 0, 1: 0, 2: 0.3, 3: 0.8, 4: 2, 5: 6, 6: 25, 7: 100, 8: 500, 9: 2500, 10: 25000},
 }
 
-# ================== HI-LO ==================
-HILO_CARDS = list(range(2, 15))
-HILO_NAMES = {2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A"}
-HILO_STEP_MULT = 1.92
+# ================== HI-LO (higher/same, lower/same) ==================
+HILO_TOTAL = 13
+HILO_NAMES = {1:"A",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K"}
+HILO_EDGE = 0.01
 
-def hilo_multiplier(current, guess, remaining_cards):
-    if not remaining_cards: return None
-    favorable = sum(1 for c in remaining_cards
-                    if (guess == "higher" and c > current) or (guess == "lower" and c < current))
-    if favorable == 0: return None
-    total = len(remaining_cards)
-    return round((1 - HOUSE_EDGE) * total / favorable, 4)
+def hilo_prob_mult(current, direction):
+    current = int(current)
+    if direction == "higher":
+        favorable = HILO_TOTAL - current + 1
+    else:
+        favorable = current
+    p = favorable / HILO_TOTAL
+    m = round((1 - HILO_EDGE) / p, 2)
+    return round(p, 4), m
 
-# ================== SCRATCH (9-cell, multipliers) ==================
+def hilo_draw_card(ss, cs, nonce, step):
+    r = pf_rand(ss, cs, nonce * 100 + step)
+    return int(r * HILO_TOTAL) + 1
+
+# ================== SCRATCH (9-cell, always triplet) ==================
 SCRATCH_SYMBOLS = ["0x", "0.5x", "1x", "2x", "2.5x", "4x", "5x", "7.5x", "10x", "14x"]
 SCRATCH_VALUES  = [0.0, 0.5, 1.0, 2.0, 2.5, 4.0, 5.0, 7.5, 10.0, 14.0]
 
 SCRATCH_TIERS = [
-    {"id":"mat",      "name":"Мать",      "bet":0.20,  "color":"#10b981", "max":14,
-     "win_chance":0.22,
-     "win_weights":  [0, 5,  10, 15, 15, 20, 15, 10, 6, 4],
-     "lose_weights": [40, 20, 15, 10, 6,  4,  2.5, 1.5, 0.7, 0.3]},
-    {"id":"lazur",    "name":"Лазурь",    "bet":0.50,  "color":"#3b82f6", "max":14,
-     "win_chance":0.20,
-     "win_weights":  [0, 5,  10, 12, 15, 20, 16, 11, 7, 4],
-     "lose_weights": [45, 18, 14, 10, 6,  4,  2,   0.7, 0.3, 0.1]},
-    {"id":"violet",   "name":"Виолет",    "bet":1.00,  "color":"#a855f7", "max":14,
-     "win_chance":0.20,
-     "win_weights":  [0, 4,  9,  12, 14, 20, 16, 12, 8, 5],
-     "lose_weights": [45, 18, 14, 10, 6,  4,  2,   0.7, 0.3, 0.1]},
-    {"id":"sunset",   "name":"Закат",     "bet":2.00,  "color":"#f97316", "max":14,
-     "win_chance":0.18,
-     "win_weights":  [0, 4,  8,  11, 13, 18, 17, 13, 10, 6],
-     "lose_weights": [48, 17, 13, 9,  6,  4,  2,   0.7, 0.3, 0.1]},
-    {"id":"gold",     "name":"Золото",    "bet":5.00,  "color":"#fbbf24", "max":14,
-     "win_chance":0.17,
-     "win_weights":  [0, 3,  7,  10, 12, 18, 17, 14, 11, 8],
-     "lose_weights": [50, 16, 12, 9,  6,  4,  2,   0.7, 0.3, 0.1]},
-    {"id":"obsidian", "name":"Обисидиан", "bet":10.00, "color":"#e5e7eb", "max":14,
-     "win_chance":0.15,
-     "win_weights":  [0, 3,  6,  9,  11, 17, 17, 15, 12, 10],
-     "lose_weights": [52, 15, 12, 8,  6,  4,  2,   0.7, 0.3, 0.1]},
+    {"id":"mat",      "name":"Мать",       "bet":0.20,  "color":"#10b981", "max":14,
+     "weights": [83, 32, 30, 18, 8,   5,   3.5, 2,   0.9, 0.6]},
+    {"id":"lazur",    "name":"Лазурь",     "bet":0.50,  "color":"#3b82f6", "max":14,
+     "weights": [77, 30, 28, 16, 7,   4.5, 3,   1.8, 1,   0.7]},
+    {"id":"violet",   "name":"Виолет",     "bet":1.00,  "color":"#a855f7", "max":14,
+     "weights": [79, 28, 26, 15, 6.5, 4,   3,   2,   1.2, 0.8]},
+    {"id":"sunset",   "name":"Закат",      "bet":2.00,  "color":"#f97316", "max":14,
+     "weights": [83, 26, 24, 14, 6,   4,   3,   2,   1.5, 1]},
+    {"id":"gold",     "name":"Золото",     "bet":5.00,  "color":"#fbbf24", "max":14,
+     "weights": [92, 24, 22, 13, 6,   4,   3,   2.5, 1.8, 1.2]},
+    {"id":"obsidian", "name":"Обисидиан",  "bet":10.00, "color":"#e5e7eb", "max":14,
+     "weights": [98, 22, 20, 12, 6,   4,   3,   2.5, 2,   1.5]},
 ]
 SCRATCH_TIER_MAP = {t["id"]: t for t in SCRATCH_TIERS}
 
@@ -264,12 +258,10 @@ def _weighted_pick(weights, r):
     return len(weights) - 1
 
 def scratch_draw(ss, cs, nonce, tier):
-    win_chance = tier["win_chance"]
-    win_weights = tier["win_weights"]
-    lose_weights = tier["lose_weights"]
-
-    roll = pf_rand(ss, cs, nonce * 13 + 1)
-    is_win = roll < win_chance
+    weights = tier["weights"]
+    idx = _weighted_pick(weights, pf_rand(ss, cs, nonce * 13 + 1))
+    win_sym = SCRATCH_SYMBOLS[idx]
+    win_val = SCRATCH_VALUES[idx]
 
     positions = list(range(9))
     st = int.from_bytes(hashlib.sha256(f"{ss}:{cs}:{nonce}:pos".encode()).digest()[:8], "big")
@@ -278,38 +270,17 @@ def scratch_draw(ss, cs, nonce, tier):
         j = st % (i + 1)
         positions[i], positions[j] = positions[j], positions[i]
 
-    if is_win:
-        win_idx = _weighted_pick(win_weights, pf_rand(ss, cs, nonce * 13 + 2))
-        if win_idx == 0:
-            is_win = False
+    win_pos = set(positions[:3])
+    others_idx = [j for j in range(len(SCRATCH_SYMBOLS)) if j != idx]
+    cells = [None] * 9
+    for i in range(9):
+        if i in win_pos:
+            cells[i] = win_sym
         else:
-            win_sym = SCRATCH_SYMBOLS[win_idx]
-            win_val = SCRATCH_VALUES[win_idx]
-            win_pos = set(positions[:3])
-            cells = [None] * 9
-            others = [j for j in range(len(SCRATCH_SYMBOLS)) if j != win_idx]
-            ow = [lose_weights[j] for j in others]
-            if sum(ow) <= 0: ow = [1] * len(others)
-            for i in range(9):
-                if i in win_pos:
-                    cells[i] = win_sym
-                else:
-                    r = pf_rand(ss, cs, nonce * 100 + i)
-                    pick_local = _weighted_pick(ow, r)
-                    cells[i] = SCRATCH_SYMBOLS[others[pick_local]]
-            return cells, win_val
-
-    for attempt in range(80):
-        cells = []
-        for i in range(9):
-            r = pf_rand(ss, cs, nonce * 1000 + attempt * 100 + i)
-            idx = _weighted_pick(lose_weights, r)
-            cells.append(SCRATCH_SYMBOLS[idx])
-        cnt = Counter(cells)
-        if max(cnt.values()) < 3:
-            return cells, 0.0
-
-    return ["0x"] * 9, 0.0
+            r = pf_rand(ss, cs, nonce * 100 + i)
+            other = others_idx[int(r * len(others_idx))]
+            cells[i] = SCRATCH_SYMBOLS[other]
+    return cells, win_val
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 BOT_USERNAME: str | None = None
@@ -585,15 +556,6 @@ def keno_draw(ss, cs, n, count=20):
         pool[i], pool[j] = pool[j], pool[i]
     return sorted(pool[:count])
 
-def hilo_deck(ss, cs, n):
-    state = int.from_bytes(hashlib.sha256(f"{ss}:{cs}:{n}:hilo".encode()).digest()[:8], "big")
-    deck = [v for v in HILO_CARDS for _ in range(4)]
-    for i in range(len(deck) - 1, 0, -1):
-        state = (state * 6364136223846793005 + 1442695040888963407) & ((1 << 64) - 1)
-        j = state % (i + 1)
-        deck[i], deck[j] = deck[j], deck[i]
-    return deck
-
 # ================== AUTH ==================
 def validate_init_data(init_data, bot_token):
     try:
@@ -783,7 +745,6 @@ async def daily_withdrawn(uid):
 async def do_withdraw(profile, tg_id, amount, currency="USDT"):
     if currency not in SUPPORTED_CURRENCIES:
         raise HTTPException(400, "неподдерживаемая валюта")
-
     last = await sb(supabase.table("transactions").select("created_at")
                     .eq("user_id", profile["id"]).eq("type", "deposit").eq("status", "completed")
                     .order("created_at", desc=True).limit(1))
@@ -796,19 +757,15 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
                 raise HTTPException(400, f"после депозита подожди {m}м {s}с")
         except HTTPException: raise
         except Exception: pass
-
     spent = await daily_withdrawn(profile["id"])
     if spent + amount > MAX_WITHDRAW_DAILY:
         raise HTTPException(400, f"дневной лимит. Осталось {max(0, MAX_WITHDRAW_DAILY - spent):.2f}")
-
     cid = f"wd_{profile['id'][:8]}_{int(time.time())}"
-
     await sb_rpc("change_balance", {"p_user_id": profile["id"], "p_delta": -amount})
     await sb(supabase.table("transactions").insert({
         "user_id": profile["id"], "type": "withdraw", "amount": amount,
         "currency": currency, "external_id": cid,
         "status": "pending", "meta": {}}))
-
     try:
         payout = await xrocket_create_payout(tg_id, amount, "GoldCash withdraw", cid, currency)
         await sb(supabase.table("transactions")
@@ -3154,15 +3111,20 @@ async def keno_play(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "drawn": drawn, "hits": hits, "mult": mult,
             "payout": payout, "profit": profit}
 
-# ================== HI-LO ==================
+# ================== HI-LO API ==================
 @app.get("/api/games/hilo/state")
 async def hilo_state(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     ar = await get_active_round(p["id"])
     if not ar or ar["game_type"] != "hilo": return {"active": False}
     st = ar["state"]
-    return {"active": True, "current": st["current"], "level": st["level"],
-            "mult": st["mult"], "bet": float(ar["bet_amount"]),
+    current = int(st["current"])
+    ph, mh = hilo_prob_mult(current, "higher")
+    pl, ml = hilo_prob_mult(current, "lower")
+    return {"active": True, "current": current, "level": int(st["level"]),
+            "mult": float(st["mult"]), "bet": float(ar["bet_amount"]),
+            "probs": {"higher": ph, "lower": pl},
+            "mults": {"higher": mh, "lower": ml},
             "card_names": HILO_NAMES}
 
 @app.post("/api/games/hilo/start")
@@ -3177,9 +3139,8 @@ async def hilo_start(body: dict, user: dict = Depends(get_current_user)):
     if float(p["balance"]) < bet: raise HTTPException(400, "balance")
     if await get_active_round(p["id"]): raise HTTPException(400, "active")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    deck = hilo_deck(ss, p["client_seed"], nonce)
-    current = deck.pop(0)
-    state = {"current": current, "deck": deck, "level": 0, "mult": 1.0, "bet": bet}
+    card = hilo_draw_card(ss, p["client_seed"], nonce, 0)
+    state = {"current": card, "level": 0, "mult": 1.0, "bet": bet}
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
     asyncio.create_task(add_wager(p["id"], bet))
     asyncio.create_task(apply_wager_progress(p["id"], bet))
@@ -3187,7 +3148,12 @@ async def hilo_start(body: dict, user: dict = Depends(get_current_user)):
     await sb(supabase.table("active_rounds").insert({
         "user_id": p["id"], "game_type": "hilo", "bet_amount": bet,
         "state": state, "server_seed": ss, "nonce": nonce}))
-    return {"ok": True, "current": current, "level": 0, "mult": 1.0, "card_names": HILO_NAMES}
+    ph, mh = hilo_prob_mult(card, "higher")
+    pl, ml = hilo_prob_mult(card, "lower")
+    return {"ok": True, "current": card, "level": 0, "mult": 1.0,
+            "probs": {"higher": ph, "lower": pl},
+            "mults": {"higher": mh, "lower": ml},
+            "card_names": HILO_NAMES}
 
 @app.post("/api/games/hilo/guess")
 async def hilo_guess(body: dict, user: dict = Depends(get_current_user)):
@@ -3197,12 +3163,11 @@ async def hilo_guess(body: dict, user: dict = Depends(get_current_user)):
     ar = await get_active_round(p["id"])
     if not ar or ar["game_type"] != "hilo": raise HTTPException(400, "no game")
     st = ar["state"]
-    deck = list(st["deck"])
-    if not deck: raise HTTPException(400, "empty")
-    current = st["current"]
-    next_card = deck.pop(0)
-    win = (direction == "higher" and next_card > current) or (direction == "lower" and next_card < current)
+    current = int(st["current"])
     bet = float(st["bet"])
+    step = int(st["level"]) + 1
+    next_card = hilo_draw_card(ar["server_seed"], p["client_seed"], ar["nonce"], step)
+    win = (next_card >= current) if direction == "higher" else (next_card <= current)
     if not win:
         await log_round(p["id"], "hilo", bet,
                         {"lost": True, "prev": current, "next": next_card,
@@ -3213,15 +3178,17 @@ async def hilo_guess(body: dict, user: dict = Depends(get_current_user)):
         asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
         return {"ok": True, "lost": True, "current": next_card,
                 "profit": -bet, "mult": 0, "card_names": HILO_NAMES}
-    remaining = deck
-    m = hilo_multiplier(current, direction, remaining + [next_card])
-    if m is None: m = HILO_STEP_MULT
+    _, m = hilo_prob_mult(current, direction)
     new_mult = round(float(st["mult"]) * m, 6)
-    st.update({"current": next_card, "deck": deck,
-               "level": st["level"] + 1, "mult": new_mult})
+    st.update({"current": next_card, "level": st["level"] + 1, "mult": new_mult})
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
+    ph, mh = hilo_prob_mult(next_card, "higher")
+    pl, ml = hilo_prob_mult(next_card, "lower")
     return {"ok": True, "lost": False, "current": next_card,
-            "level": st["level"], "mult": new_mult, "card_names": HILO_NAMES}
+            "level": st["level"], "mult": new_mult,
+            "probs": {"higher": ph, "lower": pl},
+            "mults": {"higher": mh, "lower": ml},
+            "card_names": HILO_NAMES}
 
 @app.post("/api/games/hilo/cashout")
 async def hilo_cashout(user: dict = Depends(get_current_user)):
