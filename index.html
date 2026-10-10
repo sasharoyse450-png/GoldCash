@@ -790,9 +790,6 @@ function renderProfile() {
   const bonusChanged = sig !== _lastBonusSig;
   _lastBonusSig = sig;
 
-  const vsig = `${vip.tier}|${vip.total_wagered}`;
-  _lastVipSig = vsig;
-
   if (bonusChanged && typeof renderGames === "function") renderGames();
 }
 
@@ -2343,7 +2340,7 @@ function renderHilo() {
   })();
 }
 
-/* ==================== SCRATCH (9-cell drag, multipliers) ==================== */
+/* ==================== SCRATCH (9-cell drag, always triplet) ==================== */
 function renderScratch() {
   const body = document.getElementById("game-body");
 
@@ -2372,6 +2369,14 @@ function renderScratch() {
            style="background:linear-gradient(135deg,#0f3b2e,#0a261e); border:1px solid rgba(16,185,129,.3);"></div>
       <div id="scratch-result" class="text-center text-sm"></div>
     </div>`;
+
+  function cellStyle(sym) {
+    const val = parseFloat(sym) || 0;
+    if (val === 0) return { bg: "rgba(0,0,0,.35)", bd: "1px solid rgba(255,255,255,.05)", col: "rgba(255,255,255,.35)" };
+    if (val >= 5) return { bg: "rgba(251,191,36,.18)", bd: "1px solid rgba(251,191,36,.45)", col: "#fbbf24" };
+    if (val >= 2) return { bg: "rgba(249,115,22,.15)", bd: "1px solid rgba(249,115,22,.4)", col: "#f97316" };
+    return { bg: "rgba(16,185,129,.15)", bd: "1px solid rgba(16,185,129,.35)", col: "#10b981" };
+  }
 
   function renderTickets() {
     const wrap = document.getElementById("scratch-tickets");
@@ -2486,14 +2491,17 @@ function renderScratch() {
         <div id="scratch-grid"
              style="position:absolute; inset:0; display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
                     padding:12px; background:linear-gradient(135deg,#14301f,#0c1e13);">
-          ${Array.from({length:9}).map((_, i) => `
-            <div class="scratch-cell" data-i="${i}"
-                 style="background:rgba(0,0,0,.35); border-radius:8px;
-                        border:1px solid rgba(255,255,255,.05);
-                        display:flex; align-items:center; justify-content:center;
-                        font-weight:900; font-size:clamp(16px,5.5vw,26px);
-                        color:#e8eaed; letter-spacing:-.03em;"></div>
-          `).join("")}
+          ${Array.from({length:9}).map((_, i) => {
+            const sym = currentCells[i] || "";
+            const st = cellStyle(sym);
+            return `
+              <div class="scratch-cell" data-i="${i}"
+                   style="background:${st.bg}; border-radius:8px; border:${st.bd};
+                          display:flex; align-items:center; justify-content:center;
+                          font-weight:900; font-size:clamp(16px,5.5vw,26px);
+                          color:${st.col}; letter-spacing:-.03em;">${sym}</div>
+            `;
+          }).join("")}
         </div>
         <canvas id="scratch-canvas"
                 style="position:absolute; inset:0; width:100%; height:100%;
@@ -2591,7 +2599,8 @@ function renderScratch() {
             total++;
             if (data[i] < 50) transparent++;
           }
-          if (total > 0 && transparent / total > 0.5) revealBoard();
+          // порог 80%
+          if (total > 0 && transparent / total > 0.80) revealBoard();
         } catch (_) {}
       }
 
@@ -2639,48 +2648,39 @@ function renderScratch() {
       setTimeout(() => { canvas.style.display = "none"; }, 400);
     }
 
+    // всегда ищем триплет (даже 0x 0x 0x)
+    const counts = {};
+    currentCells.forEach(c => counts[c] = (counts[c] || 0) + 1);
     let winSym = null;
-    if (currentMult > 0) {
-      const counts = {};
-      currentCells.forEach(c => counts[c] = (counts[c] || 0) + 1);
-      for (const [s, c] of Object.entries(counts)) {
-        if (c >= 3) { winSym = s; break; }
-      }
+    for (const [s, c] of Object.entries(counts)) {
+      if (c >= 3) { winSym = s; break; }
     }
 
     const cells = document.querySelectorAll(".scratch-cell");
     cells.forEach((el, i) => {
       const sym = currentCells[i];
       const isWin = winSym && sym === winSym;
+      const val = parseFloat(sym) || 0;
       el.innerText = sym;
 
-      const val = parseFloat(sym) || 0;
-      let bg, bd, col;
-      if (isWin) {
-        bg = "rgba(16,185,129,.28)";
-        bd = "2px solid var(--green)";
-        col = "#10b981";
-      } else if (val === 0) {
-        bg = "rgba(255,255,255,.04)";
-        bd = "1px solid rgba(255,255,255,.06)";
-        col = "rgba(255,255,255,.3)";
-      } else if (val >= 5) {
-        bg = "rgba(251,191,36,.12)";
-        bd = "1px solid rgba(251,191,36,.3)";
-        col = "#fbbf24";
-      } else if (val >= 2) {
-        bg = "rgba(249,115,22,.10)";
-        bd = "1px solid rgba(249,115,22,.25)";
-        col = "#f97316";
+      if (isWin && val > 0) {
+        el.style.background = "rgba(16,185,129,.3)";
+        el.style.border = "2px solid var(--green)";
+        el.style.color = "#10b981";
+        el.style.boxShadow = "0 0 16px rgba(16,185,129,.4)";
+      } else if (isWin && val === 0) {
+        el.style.background = "rgba(239,68,68,.15)";
+        el.style.border = "2px solid rgba(239,68,68,.5)";
+        el.style.color = "rgba(255,255,255,.5)";
+        el.style.boxShadow = "none";
       } else {
-        bg = "rgba(255,255,255,.06)";
-        bd = "1px solid rgba(255,255,255,.08)";
-        col = "#e8eaed";
+        // оставляем базовые цвета, но делаем чуть тусклее
+        const st = cellStyle(sym);
+        el.style.background = st.bg;
+        el.style.border = st.bd;
+        el.style.color = st.col;
+        el.style.boxShadow = "none";
       }
-      el.style.background = bg;
-      el.style.border = bd;
-      el.style.color = col;
-      el.style.boxShadow = isWin ? "0 0 16px rgba(16,185,129,.35)" : "none";
       el.style.animation = "cardIn .35s ease both";
       el.style.animationDelay = (i * 55) + "ms";
     });
@@ -2697,7 +2697,7 @@ function renderScratch() {
       haptic("heavy");
     } else {
       res.innerHTML = `<div style="color:var(--red); font-weight:700; font-size:16px; padding:6px 0;">
-        −${t.bet.toFixed(2)} ₮
+        0x · −${t.bet.toFixed(2)} ₮
       </div>`;
       updateBalance(num(profile.balance));
     }
@@ -2708,7 +2708,7 @@ function renderScratch() {
       currentMult = 0;
       revealed = false;
       renderCardPreview();
-    }, 2200);
+    }, 2400);
   }
 
   renderTickets();
