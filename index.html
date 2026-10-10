@@ -53,56 +53,32 @@
   /* ============================================================
      LAYOUT — центрированная колонка 480px на всех разрешениях
      ============================================================ */
-  .app-col {
-    width: 100%;
-    max-width: var(--app-max);
-    margin-left: auto;
-    margin-right: auto;
-  }
+  .app-col { width: 100%; max-width: var(--app-max); margin-left: auto; margin-right: auto; }
   .app-fixed-top {
-    position: fixed;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 100%;
-    max-width: var(--app-max);
-    z-index: 40;
+    position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: var(--app-max); z-index: 40;
   }
   .app-fixed-bottom {
-    position: fixed;
-    bottom: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 100%;
-    max-width: var(--app-max);
-    z-index: 40;
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: var(--app-max); z-index: 40;
   }
-  #main-content {
-    max-width: var(--app-max);
-    margin-left: auto;
-    margin-right: auto;
-  }
-  /* На широких экранах добавим рамку и тень вокруг колонки контента */
+  #main-content { max-width: var(--app-max); margin-left: auto; margin-right: auto; }
   @media (min-width: 640px) {
     body::before {
       content: '';
-      position: fixed;
-      top: 0; bottom: 0;
-      left: 50%;
+      position: fixed; top: 0; bottom: 0; left: 50%;
       transform: translateX(-50%);
       width: calc(var(--app-max) + 2px);
-      pointer-events: none;
-      z-index: 0;
+      pointer-events: none; z-index: 0;
       box-shadow:
         0 0 0 1px rgba(255,255,255,.03),
         0 0 80px rgba(0,0,0,.6),
         0 0 120px rgba(124,58,237,.05);
-      border-radius: 0;
     }
   }
 
   /* ============================================================
-     TOP BAR / NAV / HEADER
+     TOP BAR / NAV
      ============================================================ */
   .brand { font-weight: 900; letter-spacing: -.04em; font-size: 20px; }
   .brand .dot { color: var(--accent); }
@@ -165,6 +141,9 @@
     background: rgba(251,191,36,.1); border-radius: 6px;
   }
 
+  /* ============================================================
+     GAME CARDS — картинка 16:9 + fallback текст
+     ============================================================ */
   .game-card {
     position: relative;
     display: block;
@@ -181,13 +160,14 @@
 
   .game-hero {
     position: relative;
-    height: 150px;
+    aspect-ratio: 16 / 9;
     overflow: hidden;
+    background: linear-gradient(135deg, #171b24 0%, #0d1017 100%);
   }
   .game-hero-bg {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    font-size: 130px;
+    font-size: 96px;
     font-weight: 900;
     letter-spacing: -.06em;
     color: rgba(255,255,255,.08);
@@ -195,19 +175,50 @@
     user-select: none;
     pointer-events: none;
     white-space: nowrap;
-    transform: translateY(2px);
+    z-index: 0;
   }
-  .game-hero-bg.two-lines { font-size: 90px; letter-spacing: -.08em; }
+  .game-hero-bg.two-lines { font-size: 68px; letter-spacing: -.08em; }
+
+  .game-hero-img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    z-index: 1;
+    background: #0d1017;
+  }
+
+  .game-hero-shade {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg,
+                rgba(10,13,18,.05) 0%,
+                rgba(10,13,18,.30) 55%,
+                rgba(10,13,18,.85) 100%);
+    pointer-events: none;
+    z-index: 2;
+  }
 
   .game-rtp {
     position: absolute; top: 10px; left: 10px;
     font-size: 10px; font-weight: 800; letter-spacing: .06em;
     color: var(--green);
-    background: rgba(10,13,18,.7);
+    background: rgba(10,13,18,.75);
     padding: 4px 8px; border-radius: 5px;
     text-transform: uppercase;
-    z-index: 2;
+    z-index: 3;
     border: 1px solid rgba(16,185,129,.2);
+    backdrop-filter: blur(6px);
+  }
+
+  .game-off {
+    position: absolute; top: 10px; right: 10px;
+    font-size: 10px; font-weight: 800; letter-spacing: .06em;
+    color: var(--red);
+    background: rgba(10,13,18,.85);
+    padding: 4px 8px; border-radius: 5px;
+    text-transform: uppercase;
+    z-index: 3;
+    border: 1px solid rgba(239,68,68,.3);
   }
 
   .game-overlay {
@@ -236,14 +247,6 @@
     white-space: nowrap;
   }
 
-  .game-card.crash     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #241019 0%, #0d0810 100%); }
-  .game-card.mines     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #0f2018 0%, #08120d 100%); }
-  .game-card.roulette  .game-hero { background: radial-gradient(120% 100% at 0% 0%, #21100f 0%, #100808 100%); }
-  .game-card.dice      .game-hero { background: radial-gradient(120% 100% at 0% 0%, #131a2b 0%, #080c16 100%); }
-  .game-card.plinko    .game-hero { background: radial-gradient(120% 100% at 0% 0%, #1f1a0e 0%, #100d08 100%); }
-  .game-card.blackjack .game-hero { background: radial-gradient(120% 100% at 0% 0%, #0d1e16 0%, #071009 100%); }
-  .game-card.tower     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #1a1024 0%, #0e0815 100%); }
-
   .nav { background: var(--bg); border-top: 1px solid var(--border); }
   .nav-btn {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -254,7 +257,7 @@
   .nav-btn svg { width: 20px; height: 20px; }
 
   /* ============================================================
-     МОДАЛКИ — центрированные по колонке приложения
+     МОДАЛКИ
      ============================================================ */
   .modal {
     position: fixed; inset: 0; display: flex;
@@ -818,15 +821,20 @@ async function loadLive() {
   } catch {}
 }
 
+/* ============ ИГРЫ ============
+   Картинки лежат в папке assets/ твоего репозитория.
+   Расширения: .jpg .png .webp — поменяй в поле img.
+*/
 const games = [
-  { id:"crash",     title:"Crash",     bigText:"CRASH",     cls:"crash" },
-  { id:"mines",     title:"Mines",     bigText:"MINES",     cls:"mines" },
-  { id:"roulette",  title:"Roulette",  bigText:"ROULETTE",  cls:"roulette" },
-  { id:"dice",      title:"Dice",      bigText:"DICE",      cls:"dice" },
-  { id:"plinko",    title:"Plinko",    bigText:"PLINKO",    cls:"plinko" },
-  { id:"blackjack", title:"Blackjack", bigText:"BLACKJACK", cls:"blackjack two-lines" },
-  { id:"tower",     title:"Tower",     bigText:"TOWER",     cls:"tower" },
+  { id:"crash",     title:"Crash",     img:"./assets/crash.jpg" },
+  { id:"mines",     title:"Mines",     img:"./assets/mines.jpg" },
+  { id:"roulette",  title:"Roulette",  img:"./assets/roulette.jpg" },
+  { id:"dice",      title:"Dice",      img:"./assets/dice.jpg" },
+  { id:"plinko",    title:"Plinko",    img:"./assets/plinko.jpg" },
+  { id:"blackjack", title:"Blackjack", img:"./assets/blackjack.jpg" },
+  { id:"tower",     title:"Tower",     img:"./assets/tower.jpg" },
 ];
+
 function renderGames() {
   const enabled = cfg.games_enabled || {};
   const list = games.filter(g => enabled[g.id] !== false);
@@ -836,9 +844,16 @@ function renderGames() {
     return;
   }
   wrap.innerHTML = list.map(g => `
-    <button class="game-card ${g.cls}" data-id="${g.id}" data-title="${g.title}">
+    <button class="game-card" data-id="${g.id}" data-title="${g.title}">
       <div class="game-hero">
-        <div class="game-hero-bg ${g.cls.includes("two-lines")?'two-lines':''}">${g.bigText}</div>
+        <div class="game-hero-bg">${g.title.toUpperCase()}</div>
+        <img class="game-hero-img"
+             src="${g.img}"
+             alt="${g.title}"
+             loading="lazy"
+             decoding="async"
+             onerror="this.style.display='none'">
+        <div class="game-hero-shade"></div>
         <span class="game-rtp">RTP 96%</span>
       </div>
       <div class="game-overlay">
