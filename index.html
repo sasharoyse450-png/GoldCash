@@ -101,7 +101,6 @@
   }
   .game-card:active { border-color: var(--border-hi); }
 
-  /* hero с огромной буквой */
   .game-hero {
     position: relative;
     height: 150px;
@@ -133,7 +132,6 @@
     border: 1px solid rgba(16,185,129,.2);
   }
 
-  /* инфо-строка снизу */
   .game-overlay {
     position: relative;
     padding: 12px 14px;
@@ -160,7 +158,6 @@
     white-space: nowrap;
   }
 
-  /* цвета фонов карточек — очень тёмные, не AI-стиль */
   .game-card.crash     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #241019 0%, #0d0810 100%); }
   .game-card.mines     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #0f2018 0%, #08120d 100%); }
   .game-card.roulette  .game-hero { background: radial-gradient(120% 100% at 0% 0%, #21100f 0%, #100808 100%); }
@@ -1471,6 +1468,12 @@ function renderBlackjack() {
     const hideDealer = inGame;
     body.innerHTML = `
       <div class="flex flex-col h-full gap-3">
+        ${inGame ? `
+          <div class="row-item" style="background:rgba(251,191,36,.08); border-color:rgba(251,191,36,.2);">
+            <span class="text-xs" style="color:var(--accent); font-weight:700;">
+              ⏸ Игра продолжается${state.bet ? ' · ставка '+num(state.bet).toFixed(2) : ''}
+            </span>
+          </div>` : ``}
         <div class="rounded-2xl p-4 min-h-[140px]" style="background:var(--surface); border:1px solid var(--border);">
           <div class="section-title mb-2">Дилер ${state ? "· "+state.dealer_value : ""}</div>
           <div class="flex justify-center flex-wrap">${dealerCards.map((c,i) => cardHtml(c, hideDealer && i === 1)).join("") || '<div class="text-xs" style="color:var(--muted);">—</div>'}</div>
@@ -1493,8 +1496,8 @@ function renderBlackjack() {
         haptic("medium");
         try {
           const r = await api("/api/games/blackjack/start", { method:"POST", body:JSON.stringify({ bet }) });
-          updateBalance(num(profile.balance) - bet);
-          drawGame(r);
+          if (!r.resumed) updateBalance(num(profile.balance) - bet);
+          drawGame({ ...r, bet });
           if (r.finished) showResult(r);
         } catch (e) { toast(e.message); }
       };
@@ -1535,7 +1538,23 @@ function renderBlackjack() {
     again.onclick = () => drawGame(null);
     res.parentElement.appendChild(again);
   }
-  drawGame(null);
+
+  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
+  (async () => {
+    try {
+      const s = await api("/api/games/blackjack/state");
+      if (s.active) {
+        drawGame({
+          player: s.player,
+          dealer: [s.dealer[0], "??"],
+          player_value: s.player_value,
+          dealer_value: s.dealer_value,
+          finished: false,
+          bet: s.bet,
+        });
+      } else drawGame(null);
+    } catch { drawGame(null); }
+  })();
 }
 
 /* ============ TOWER ============ */
@@ -1544,6 +1563,8 @@ function renderTower() {
   const LEVELS = 6;
   let active = false;
   let currentLevel = 0;
+  let initialRevealed = [];
+
   function drawTower(revealed = []) {
     let html = "";
     for (let lvl = LEVELS - 1; lvl >= 0; lvl--) {
@@ -1568,6 +1589,10 @@ function renderTower() {
     const mult = currentLevel === 0 ? 1 : Number((1.44 ** currentLevel).toFixed(2));
     body.innerHTML = `
       <div class="flex flex-col h-full gap-3">
+        ${active && currentLevel > 0 ? `
+          <div class="row-item" style="background:rgba(251,191,36,.08); border-color:rgba(251,191,36,.2);">
+            <span class="text-xs" style="color:var(--accent); font-weight:700;">⏸ Игра продолжается · уровень ${currentLevel}</span>
+          </div>` : ``}
         <div class="flex items-center justify-between">
           <div class="text-sm" style="color:var(--muted);">Уровень: <b style="color:var(--text);">${currentLevel}</b></div>
           <div class="text-sm" style="color:var(--muted);">Множитель: <b style="color:var(--green);">×${mult}</b></div>
@@ -1587,10 +1612,11 @@ function renderTower() {
         if (!validateBet(bet)) return;
         haptic("medium");
         try {
-          await api("/api/games/tower/start", { method:"POST", body:JSON.stringify({ bet }) });
-          updateBalance(num(profile.balance) - bet);
-          active = true; currentLevel = 0;
-          drawAll([]);
+          const r = await api("/api/games/tower/start", { method:"POST", body:JSON.stringify({ bet }) });
+          if (!r.resumed) updateBalance(num(profile.balance) - bet);
+          active = true;
+          currentLevel = r.level || 0;
+          drawAll(initialRevealed);
         } catch (e) { toast(e.message); }
       };
     } else {
@@ -1601,7 +1627,7 @@ function renderTower() {
           updateBalance(num(profile.balance) + num(r.payout));
           body.querySelector("#tower-result").innerHTML = `<span style="color:var(--green); font-weight:700;">Забрано +${num(r.profit).toFixed(2)} (×${r.mult})</span>`;
           active = false;
-          setTimeout(() => { currentLevel = 0; drawAll([]); }, 2000);
+          setTimeout(() => { currentLevel = 0; initialRevealed = []; drawAll([]); }, 2000);
         } catch (e) { toast(e.message); }
       };
       bindDoors();
@@ -1628,19 +1654,32 @@ function renderTower() {
               } else el2.innerText = "🚪";
             });
             body.querySelector("#tower-result").innerHTML = `<span style="color:var(--red); font-weight:700;">💥 Мина на уровне ${currentLevel+1}</span>`;
-            setTimeout(() => { currentLevel = 0; drawAll([]); }, 2000);
+            setTimeout(() => { currentLevel = 0; initialRevealed = []; drawAll([]); }, 2000);
           } else {
             currentLevel = r.level;
             const revealed = [];
             for (let i = 0; i < r.level; i++) revealed.push({ level: i, door: 0 });
             if (revealed.length) revealed[revealed.length-1] = { level: r.level-1, door };
+            initialRevealed = revealed;
             drawAll(revealed);
           }
         } catch (e) { toast(e.message); }
       };
     });
   }
-  drawAll([]);
+
+  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
+  (async () => {
+    try {
+      const s = await api("/api/games/tower/state");
+      if (s.active) {
+        active = true;
+        currentLevel = s.level;
+        initialRevealed = s.revealed || [];
+        drawAll(initialRevealed);
+      } else drawAll([]);
+    } catch { drawAll([]); }
+  })();
 }
 
 setInterval(async () => {
