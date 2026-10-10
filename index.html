@@ -27,11 +27,9 @@
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
-  /* ============== BETA LABEL ============== */
   .brand { font-weight: 900; letter-spacing: -.04em; font-size: 20px; }
   .brand .dot { color: var(--accent); }
 
-  /* ============== TOP BAR ============== */
   .topbar { background: var(--bg); border-bottom: 1px solid var(--border); }
   .balance-pill {
     background: var(--surface); border: 1px solid var(--border);
@@ -61,7 +59,6 @@
     font-size: 12px; font-weight: 800;
   }
 
-  /* ============== SECTIONS ============== */
   .section-title {
     font-size: 13px; font-weight: 800;
     text-transform: uppercase; letter-spacing: .06em;
@@ -70,7 +67,6 @@
   }
   .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
 
-  /* ============== LIVE TICKER ============== */
   .live-item {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 8px 10px; min-width: 160px;
@@ -90,49 +86,75 @@
     background: rgba(251,191,36,.1); border-radius: 6px;
   }
 
-  /* ============== GAME CARDS ============== */
+  /* ========== GAME CARDS (large, hero) ========== */
   .game-card {
-    display: flex; align-items: stretch;
+    position: relative;
+    display: block;
+    width: 100%;
+    border-radius: 12px;
+    overflow: hidden;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 14px;
-    overflow: hidden;
     text-align: left;
-    width: 100%;
     cursor: pointer;
     transition: border-color .15s;
   }
   .game-card:active { border-color: var(--border-hi); }
-  .game-thumb {
-    width: 96px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 36px;
+
+  .game-hero {
+    height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 68px;
     position: relative;
-    border-right: 1px solid var(--border);
+    overflow: hidden;
   }
-  .game-thumb.crash { background: linear-gradient(135deg, #2b1220, #1a0b14); }
-  .game-thumb.mines { background: linear-gradient(135deg, #0f2620, #0a1814); }
-  .game-thumb.roulette { background: linear-gradient(135deg, #2b1717, #1a0d0d); }
-  .game-thumb.dice { background: linear-gradient(135deg, #1a2138, #101728); }
-  .game-thumb.plinko { background: linear-gradient(135deg, #2b2312, #1a150a); }
-  .game-thumb.blackjack { background: linear-gradient(135deg, #122b1f, #0a1a13); }
-  .game-thumb.tower { background: linear-gradient(135deg, #241230, #150a1d); }
-  .game-body { padding: 12px 14px; display: flex; flex-direction: column; justify-content: center; flex: 1; min-width: 0; }
-  .game-title { font-size: 15px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 2px; }
-  .game-sub { font-size: 11px; color: var(--muted); font-weight: 600; }
-  .game-tag {
-    font-size: 10px; font-weight: 800; letter-spacing: .04em;
-    text-transform: uppercase; color: var(--green);
-    background: rgba(16,185,129,.1);
-    padding: 2px 6px; border-radius: 4px;
-    display: inline-block; margin-top: 6px;
+  .game-hero::after {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, transparent 50%, rgba(0,0,0,.35) 100%);
   }
-  .game-cta {
-    display: flex; align-items: center; padding-right: 14px;
-    color: var(--accent); font-weight: 900; font-size: 18px;
+  .game-hero.crash     { background: radial-gradient(120% 120% at 20% 0%, #3a1725 0%, #0f060a 100%); }
+  .game-hero.mines     { background: radial-gradient(120% 120% at 20% 0%, #0f2c23 0%, #061410 100%); }
+  .game-hero.roulette  { background: radial-gradient(120% 120% at 20% 0%, #33161a 0%, #12070a 100%); }
+  .game-hero.dice      { background: radial-gradient(120% 120% at 20% 0%, #1c2340 0%, #080b18 100%); }
+  .game-hero.plinko    { background: radial-gradient(120% 120% at 20% 0%, #302514 0%, #14100a 100%); }
+  .game-hero.blackjack { background: radial-gradient(120% 120% at 20% 0%, #0f2e1e 0%, #061510 100%); }
+  .game-hero.tower     { background: radial-gradient(120% 120% at 20% 0%, #281438 0%, #10081a 100%); }
+
+  .game-hero-icon { position: relative; z-index: 1; filter: drop-shadow(0 4px 12px rgba(0,0,0,.5)); }
+
+  .game-rtp {
+    position: absolute; top: 12px; left: 12px;
+    font-size: 10px; font-weight: 800; letter-spacing: .06em;
+    color: var(--green);
+    background: rgba(10,13,18,.7);
+    padding: 4px 8px; border-radius: 5px;
+    text-transform: uppercase;
+    z-index: 2;
+    border: 1px solid rgba(16,185,129,.2);
   }
 
-  /* ============== BOTTOM NAV ============== */
+  .game-overlay {
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+  .game-name { font-size: 17px; font-weight: 900; letter-spacing: -.025em; }
+  .game-hint { font-size: 11px; color: var(--muted); margin-top: 2px; font-weight: 600; }
+  .game-play {
+    font-size: 11px; font-weight: 800;
+    color: var(--accent);
+    text-transform: uppercase; letter-spacing: .06em;
+    white-space: nowrap;
+  }
+
+  /* ========== BOTTOM NAV ========== */
   .nav { background: var(--bg); border-top: 1px solid var(--border); }
   .nav-btn {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -142,7 +164,7 @@
   .nav-btn.active { color: var(--accent); }
   .nav-btn svg { width: 20px; height: 20px; }
 
-  /* ============== MODALS ============== */
+  /* ========== MODALS ========== */
   .modal { position: fixed; inset: 0; display: none; background: rgba(0,0,0,.7); align-items: flex-end; z-index: 100; }
   .modal.open { display: flex; }
   .modal-box {
@@ -159,7 +181,6 @@
   #modal-rules { z-index: 9999 !important; }
   #toast { z-index: 10000; }
 
-  /* ============== INPUTS ============== */
   .inp {
     width: 100%; background: var(--surface-2);
     border: 1px solid var(--border-hi);
@@ -177,9 +198,8 @@
     border-radius: 8px; padding: 8px 0; font-size: 12px; font-weight: 700;
     color: var(--text);
   }
-  .quick-btn:active { border-color: var(--accent); color: var(--accent); }
+  .quick-btn:active, .quick-btn.selected { border-color: var(--accent); color: var(--accent); }
 
-  /* ============== SUBMIT BUTTONS ============== */
   .submit {
     width: 100%; background: var(--accent); color: #0a0d12;
     border: none; border-radius: 12px;
@@ -191,26 +211,12 @@
   .submit-green { background: var(--green); color: #031b12; }
   .submit-green:active { background: #0a8c62; }
 
-  /* ============== GAME BALANCE BAR ============== */
   .game-balance {
     background: rgba(251,191,36,.08); color: var(--accent);
     border: 1px solid rgba(251,191,36,.2);
     font-weight: 800; padding: 4px 10px; border-radius: 8px; font-size: 12px;
   }
 
-  /* ============== CELL / BET GRID ============== */
-  .bet-grid { display: grid; gap: 6px; }
-  .bet-cell {
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 6px; font-size: 12px; font-weight: 700;
-    color: var(--text); text-align: center;
-    transition: border-color .15s;
-  }
-  .bet-cell:active, .bet-cell.selected { border-color: var(--accent); color: var(--accent); }
-
-  /* ============== CARD ELEMENT (bj) ============== */
   .bj-card {
     display: inline-flex; align-items: center; justify-content: center;
     width: 54px; height: 76px;
@@ -227,7 +233,6 @@
     color: var(--accent); font-size: 16px;
   }
 
-  /* ============== ANIMATIONS ============== */
   @keyframes balUp { 0%{color:var(--text)} 50%{color:var(--green)} 100%{color:var(--text)} }
   @keyframes balDown { 0%{color:var(--text)} 50%{color:var(--red)} 100%{color:var(--text)} }
   .bal-flash-up { animation: balUp .5s ease; }
@@ -240,19 +245,16 @@
   .skeleton { background: var(--surface-2); border-radius: 8px; animation: skeleton-pulse 1.4s ease-in-out infinite; }
   .skeleton-row { height: 48px; margin-bottom: 8px; }
 
-  /* ============== DICE ============== */
   .dice-face { font-size: 96px; line-height: 1; text-align: center; }
   @keyframes dice-roll { 0%{transform:rotate(0) scale(1)} 25%{transform:rotate(90deg) scale(1.15)} 50%{transform:rotate(180deg) scale(.9)} 75%{transform:rotate(270deg) scale(1.15)} 100%{transform:rotate(360deg) scale(1)} }
   .dice-rolling { animation: dice-roll .5s ease infinite; }
 
-  /* ============== PLINKO ============== */
   .plinko-board { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 12px 0; }
   .plinko-row { display: flex; gap: 6px; }
   .plinko-peg { width: 6px; height: 6px; background: rgba(255,255,255,.25); border-radius: 50%; }
   .plinko-slot { display: flex; gap: 3px; justify-content: center; margin-top: 8px; }
   .plinko-cell { min-width: 26px; padding: 5px 2px; text-align: center; font-size: 9px; font-weight: 800; border-radius: 4px; }
 
-  /* ============== TOWER ============== */
   .tower-row { display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; }
   .tower-door {
     flex: 1; padding: 12px 0; text-align: center; border-radius: 8px;
@@ -264,7 +266,6 @@
   .tower-door.mine { background: rgba(239,68,68,.15); border-color: var(--red); }
   .tower-door.locked { opacity: .35; pointer-events: none; }
 
-  /* ============== WHEEL ============== */
   .wheel-wrap { position: relative; width: 220px; height: 220px; margin: 0 auto; }
   .wheel-pointer {
     position: absolute; top: -6px; left: 50%; transform: translateX(-50%);
@@ -286,7 +287,6 @@
     font-weight: 900; font-size: 20px; z-index: 2; color: var(--text);
   }
 
-  /* ============== ROW / LIST ITEM ============== */
   .row-item {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 12px;
@@ -303,7 +303,6 @@
   .row-sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
   .row-amt { font-weight: 800; font-size: 13px; }
 
-  /* ============== TOAST ============== */
   #toast {
     background: #1b202b; border: 1px solid var(--border-hi);
     border-radius: 10px; font-size: 13px; font-weight: 600;
@@ -328,8 +327,6 @@
 </header>
 
 <main class="pt-16 pb-24 px-4">
-
-  <!-- LIVE -->
   <section class="mt-4">
     <div class="flex items-center justify-between mb-3">
       <div class="section-title">
@@ -344,15 +341,13 @@
     </div>
   </section>
 
-  <!-- GAMES -->
   <section class="mt-7">
     <div class="flex items-center justify-between mb-3">
       <div class="section-title">Игры</div>
       <button id="btn-rules-all" class="text-xs text-gray-500 underline">RTP и правила</button>
     </div>
-    <div id="games" class="flex flex-col gap-2.5"></div>
+    <div id="games" class="flex flex-col gap-3"></div>
   </section>
-
 </main>
 
 <nav class="fixed bottom-0 left-0 right-0 z-40 nav">
@@ -391,7 +386,6 @@
   </div>
 </nav>
 
-<!-- DEPOSIT -->
 <div id="modal-deposit" class="modal">
   <div class="modal-box">
     <div class="flex justify-between items-center mb-4">
@@ -407,8 +401,7 @@
       </select>
     </div>
     <label class="text-xs text-gray-500 font-bold uppercase tracking-wider">Сумма</label>
-    <input id="deposit-amount" type="number" inputmode="decimal" min="0.1" step="0.01"
-      class="inp mt-2 mb-3" placeholder="1">
+    <input id="deposit-amount" type="number" inputmode="decimal" min="0.1" step="0.01" class="inp mt-2 mb-3" placeholder="1">
     <div class="flex gap-2 mb-4">
       <button class="deposit-quick quick-btn" data-v="0.5">0.5</button>
       <button class="deposit-quick quick-btn" data-v="1">1</button>
@@ -419,7 +412,6 @@
   </div>
 </div>
 
-<!-- WITHDRAW -->
 <div id="modal-withdraw" class="modal">
   <div class="modal-box">
     <div class="flex justify-between items-center mb-4">
@@ -438,14 +430,12 @@
       </select>
     </div>
     <label class="text-xs text-gray-500 font-bold uppercase tracking-wider">Сумма</label>
-    <input id="withdraw-amount" type="number" inputmode="decimal" min="0.5" step="0.01"
-      class="inp mt-2 mb-2" placeholder="1">
+    <input id="withdraw-amount" type="number" inputmode="decimal" min="0.5" step="0.01" class="inp mt-2 mb-2" placeholder="1">
     <p id="withdraw-note" class="text-xs text-gray-500 mb-4"></p>
     <button id="do-withdraw" class="submit">Вывести</button>
   </div>
 </div>
 
-<!-- PROFILE -->
 <div id="modal-profile" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -459,7 +449,6 @@
   </div>
 </div>
 
-<!-- HISTORY -->
 <div id="modal-history" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -474,7 +463,6 @@
   </div>
 </div>
 
-<!-- FAIRNESS -->
 <div id="modal-fair" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -485,7 +473,6 @@
   </div>
 </div>
 
-<!-- TOP -->
 <div id="modal-top" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -501,7 +488,6 @@
   </div>
 </div>
 
-<!-- FRIENDS -->
 <div id="modal-bonus" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -512,7 +498,6 @@
   </div>
 </div>
 
-<!-- GAME -->
 <div id="modal-game">
   <div class="flex items-center justify-between p-3" style="border-bottom:1px solid var(--border);">
     <h3 id="game-title" style="font-size:15px; font-weight:800; letter-spacing:-.02em;">Игра</h3>
@@ -525,7 +510,6 @@
   <div id="game-body" class="flex-1 overflow-y-auto no-scrollbar p-4"></div>
 </div>
 
-<!-- RULES -->
 <div id="modal-rules" class="modal">
   <div class="modal-box max-h-[90vh] overflow-y-auto no-scrollbar">
     <div class="flex justify-between items-center mb-4">
@@ -672,24 +656,28 @@ async function loadLive() {
 }
 
 const games = [
-  { id:"crash",     title:"Crash",     sub:"Множитель растёт",       icon:"💥", cls:"crash" },
-  { id:"mines",     title:"Mines",     sub:"5×5, найди все алмазы",   icon:"💎", cls:"mines" },
-  { id:"roulette",  title:"Roulette",  sub:"Европейская, 37 чисел",   icon:"🎡", cls:"roulette" },
-  { id:"dice",      title:"Dice",      sub:"Угадай число 1–6",        icon:"🎲", cls:"dice" },
-  { id:"plinko",    title:"Plinko",    sub:"Шарик, до ×16",           icon:"🔻", cls:"plinko" },
-  { id:"blackjack", title:"Blackjack", sub:"До 21 очка, ×2.5",        icon:"🃏", cls:"blackjack" },
-  { id:"tower",     title:"Tower",     sub:"6 уровней, 3 двери",      icon:"🗼", cls:"tower" },
+  { id:"crash",     title:"Crash",     hint:"Множитель растёт",        icon:"💥", cls:"crash" },
+  { id:"mines",     title:"Mines",     hint:"5×5, найди алмазы",        icon:"💎", cls:"mines" },
+  { id:"roulette",  title:"Roulette",  hint:"37 чисел, европейская",    icon:"🎡", cls:"roulette" },
+  { id:"dice",      title:"Dice",      hint:"Угадай число 1–6",         icon:"🎲", cls:"dice" },
+  { id:"plinko",    title:"Plinko",    hint:"Шарик, до ×16",            icon:"🔻", cls:"plinko" },
+  { id:"blackjack", title:"Blackjack", hint:"До 21 очка, ×2.5",         icon:"🃏", cls:"blackjack" },
+  { id:"tower",     title:"Tower",     hint:"6 уровней, 3 двери",       icon:"🗼", cls:"tower" },
 ];
 function renderGames() {
   document.getElementById("games").innerHTML = games.map(g => `
     <button class="game-card" data-id="${g.id}" data-title="${g.title}">
-      <div class="game-thumb ${g.cls}">${g.icon}</div>
-      <div class="game-body">
-        <div class="game-title">${g.title}</div>
-        <div class="game-sub">${g.sub}</div>
-        <span class="game-tag">RTP 96%</span>
+      <div class="game-hero ${g.cls}">
+        <span class="game-hero-icon">${g.icon}</span>
+        <span class="game-rtp">RTP 96%</span>
       </div>
-      <div class="game-cta">›</div>
+      <div class="game-overlay">
+        <div>
+          <div class="game-name">${g.title}</div>
+          <div class="game-hint">${g.hint}</div>
+        </div>
+        <div class="game-play">Играть →</div>
+      </div>
     </button>`).join("");
 }
 
@@ -1438,11 +1426,8 @@ function renderPlinko() {
         board.replaceWith(tmp.firstElementChild);
         m.innerHTML = `Упал в слот <b>${r.slot}</b> — ×${r.mult}`;
         const res = body.querySelector("#plinko-result");
-        if (r.profit > 0) {
-          res.innerHTML = `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)}</span>`;
-        } else {
-          res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${Math.abs(num(r.profit)).toFixed(2)}</span>`;
-        }
+        if (r.profit > 0) res.innerHTML = `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)}</span>`;
+        else res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${Math.abs(num(r.profit)).toFixed(2)}</span>`;
         updateBalance(num(profile.balance) + num(r.payout));
         btn.disabled = false;
       } catch (e) { toast(e.message); btn.disabled = false; }
@@ -1481,9 +1466,7 @@ function renderBlackjack() {
       </div>`;
     const controls = body.querySelector("#bj-controls");
     if (!inGame) {
-      controls.innerHTML = `
-        ${betInputRow("bj-bet", 0.5)}
-        <button id="bj-start" class="submit mt-3">Раздать</button>`;
+      controls.innerHTML = `${betInputRow("bj-bet", 0.5)}<button id="bj-start" class="submit mt-3">Раздать</button>`;
       const betEl = () => body.querySelector("#bj-bet");
       wireBet(body, betEl);
       controls.querySelector("#bj-start").onclick = async () => {
@@ -1523,14 +1506,11 @@ function renderBlackjack() {
   function showResult(r) {
     const res = body.querySelector("#bj-result");
     if (!res) return;
-    if (r.push) {
-      res.innerHTML = `<span style="color:var(--accent); font-weight:700;">Ничья — ставка возвращена</span>`;
-    } else if (r.win) {
+    if (r.push) res.innerHTML = `<span style="color:var(--accent); font-weight:700;">Ничья — ставка возвращена</span>`;
+    else if (r.win) {
       res.innerHTML = `<span style="color:var(--green); font-weight:700;">Победа · +${num(r.profit).toFixed(2)}</span>`;
       updateBalance(num(profile.balance) + num(r.payout));
-    } else {
-      res.innerHTML = `<span style="color:var(--red); font-weight:700;">Проигрыш · −${Math.abs(num(r.profit)).toFixed(2)}</span>`;
-    }
+    } else res.innerHTML = `<span style="color:var(--red); font-weight:700;">Проигрыш · −${Math.abs(num(r.profit)).toFixed(2)}</span>`;
     const again = document.createElement("button");
     again.className = "submit mt-3";
     again.innerText = "Ещё раз";
@@ -1546,7 +1526,6 @@ function renderTower() {
   const LEVELS = 6;
   let active = false;
   let currentLevel = 0;
-  let minePositions = null;
   function drawTower(revealed = []) {
     let html = "";
     for (let lvl = LEVELS - 1; lvl >= 0; lvl--) {
@@ -1559,11 +1538,8 @@ function renderTower() {
         if (rev) {
           if (d === rev.door) { cls += " safe"; inner = "✓"; }
           else cls += " locked";
-        } else if (isActive) {
-          cls += " active";
-        } else if (lvl < currentLevel || !active) {
-          cls += " locked";
-        }
+        } else if (isActive) cls += " active";
+        else if (lvl < currentLevel || !active) cls += " locked";
         doors += `<div class="${cls}" data-level="${lvl}" data-door="${d}">${inner}</div>`;
       }
       html += `<div class="tower-row">${doors}</div>`;
@@ -1593,9 +1569,9 @@ function renderTower() {
         if (!validateBet(bet)) return;
         haptic("medium");
         try {
-          const r = await api("/api/games/tower/start", { method:"POST", body:JSON.stringify({ bet }) });
+          await api("/api/games/tower/start", { method:"POST", body:JSON.stringify({ bet }) });
           updateBalance(num(profile.balance) - bet);
-          active = true; currentLevel = 0; minePositions = null;
+          active = true; currentLevel = 0;
           drawAll([]);
         } catch (e) { toast(e.message); }
       };
@@ -1631,19 +1607,14 @@ function renderTower() {
               if (r.mine !== undefined && l === currentLevel) {
                 el2.innerText = d === r.mine ? "💣" : "🚪";
                 if (d === r.mine) el2.classList.add("mine");
-              } else {
-                el2.innerText = "🚪";
-              }
+              } else el2.innerText = "🚪";
             });
             body.querySelector("#tower-result").innerHTML = `<span style="color:var(--red); font-weight:700;">💥 Мина на уровне ${currentLevel+1}</span>`;
             setTimeout(() => { currentLevel = 0; drawAll([]); }, 2000);
           } else {
             currentLevel = r.level;
             const revealed = [];
-            for (let i = 0; i < r.level; i++) {
-              revealed.push({ level: i, door: 0 });
-            }
-            // последний уровень - оставим открытым нужный
+            for (let i = 0; i < r.level; i++) revealed.push({ level: i, door: 0 });
             if (revealed.length) revealed[revealed.length-1] = { level: r.level-1, door };
             drawAll(revealed);
           }
