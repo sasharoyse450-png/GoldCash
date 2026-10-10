@@ -18,6 +18,7 @@ from supabase import create_client, Client
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("casino")
 
+# ================== ENV ==================
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEBAPP_URL = os.environ["WEBAPP_URL"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -29,6 +30,9 @@ XROCKET_API_BASE = os.environ.get("XROCKET_API_BASE", "https://pay.api.xrocket.e
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "")
 
+DAILY_BONUS = float(os.environ.get("DAILY_BONUS", "0"))
+BONUS_COOLDOWN_H = int(os.environ.get("BONUS_COOLDOWN_H", "24"))
+
 HOUSE_EDGE = float(os.environ.get("HOUSE_EDGE", "0.04"))
 MIN_BET = float(os.environ.get("MIN_BET", "0.1"))
 MAX_BET = float(os.environ.get("MAX_BET", "1000"))
@@ -39,7 +43,7 @@ WITHDRAW_COOLDOWN_MIN = int(os.environ.get("WITHDRAW_COOLDOWN_MIN", "15"))
 MAX_WITHDRAW_DAILY = float(os.environ.get("MAX_WITHDRAW_DAILY", "500"))
 REFERRAL_SHARE = float(os.environ.get("REFERRAL_SHARE", "0.05"))
 
-ADMIN_IDS = set(int(x) for x in os.environ.get("ADMIN_IDS", "8130244626").split(",") if x.strip().isdigit())
+ADMIN_IDS = set(int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit())
 
 DICE_PAYOUT = round(6 * (1 - HOUSE_EDGE), 4)
 ROUL_RB_PAYOUT = round(2 * (1 - HOUSE_EDGE), 4)
@@ -58,11 +62,68 @@ START_TIME = time.time()
 GAMES_ENABLED = {
     "crash": True, "mines": True, "roulette": True, "dice": True,
     "plinko": True, "blackjack": True, "tower": True,
+    "basket": True, "dart": True, "football": True,
 }
 
 def ensure_game_enabled(game: str):
     if not GAMES_ENABLED.get(game, True):
         raise HTTPException(503, f"игра {game} временно отключена")
+
+# ================== PREDICTION GAMES ==================
+DICE_GAMES = {
+    "dice":     {"emoji": "🎲", "min": 1, "max": 6, "name": "Кубик"},
+    "basket":   {"emoji": "🏀", "min": 1, "max": 5, "name": "Баскетбол"},
+    "dart":     {"emoji": "🎯", "min": 1, "max": 6, "name": "Дартс"},
+    "football": {"emoji": "⚽", "min": 1, "max": 5, "name": "Футбол"},
+}
+
+DICE_PREDICTIONS = {
+    "dice": {
+        "even":   {"label": "Чёт",         "mult": 1.92},
+        "odd":    {"label": "Нечёт",       "mult": 1.92},
+        "low":    {"label": "1-3",         "mult": 1.92},
+        "high":   {"label": "4-6",         "mult": 1.92},
+        "num":    {"label": "Точное число","mult": 5.76},
+    },
+    "basket": {
+        "low":    {"label": "1-2",         "mult": 1.6},
+        "high":   {"label": "3-5",         "mult": 1.6},
+        "num":    {"label": "Точное число","mult": 4.8},
+    },
+    "dart": {
+        "red":    {"label": "Красное 1-3", "mult": 1.92},
+        "white":  {"label": "Белое 4-5",   "mult": 2.88},
+        "center": {"label": "Центр 6",     "mult": 5.76},
+        "num":    {"label": "Точное число","mult": 5.76},
+    },
+    "football": {
+        "goal":   {"label": "Гол 4-5",     "mult": 2.4},
+        "miss":   {"label": "Мимо 1-3",    "mult": 1.6},
+        "num":    {"label": "Точное число","mult": 4.8},
+    },
+}
+
+def eval_prediction(game, result, ptype, pvalue=None):
+    if game == "dice":
+        if ptype == "num":  return result == int(pvalue)
+        if ptype == "even": return result % 2 == 0
+        if ptype == "odd":  return result % 2 == 1
+        if ptype == "low":  return 1 <= result <= 3
+        if ptype == "high": return 4 <= result <= 6
+    if game == "basket":
+        if ptype == "num":  return result == int(pvalue)
+        if ptype == "low":  return result <= 2
+        if ptype == "high": return result >= 3
+    if game == "dart":
+        if ptype == "num":    return result == int(pvalue)
+        if ptype == "red":    return 1 <= result <= 3
+        if ptype == "white":  return 4 <= result <= 5
+        if ptype == "center": return result == 6
+    if game == "football":
+        if ptype == "num":  return result == int(pvalue)
+        if ptype == "goal": return result >= 4
+        if ptype == "miss": return result <= 3
+    return False
 
 PLINKO_MULTS = {
     8:  [5.6, 2.1, 1.1, 1.0, 0.5, 1.0, 1.1, 2.1, 5.6],
@@ -79,7 +140,6 @@ crash_state = {
     "auto_task": None,
 }
 
-
 class AmountInput(StatesGroup):
     deposit = State()
     withdraw = State()
@@ -87,16 +147,17 @@ class AmountInput(StatesGroup):
 class AdminInput(StatesGroup):
     broadcast = State()
 
+class PredictionInput(StatesGroup):
+    custom_bet = State()
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-
 
 async def sb(builder):
     return await asyncio.to_thread(builder.execute)
 
 async def sb_rpc(name, params):
     return await asyncio.to_thread(lambda: supabase.rpc(name, params).execute())
-
 
 async def check_rate_limit(uid: str, action: str):
     max_calls, window = RATE_LIMITS.get(action, (10, 60))
@@ -107,20 +168,15 @@ async def check_rate_limit(uid: str, action: str):
         raise HTTPException(429, f"слишком часто. Подожди {window} сек.")
     await sb(supabase.table("action_log").insert({"user_id": uid, "action": action}))
 
-
 async def ensure_not_banned(profile):
     if profile.get("is_banned"):
         reason = profile.get("ban_reason") or "нарушение правил"
         raise HTTPException(403, f"аккаунт заблокирован: {reason}")
 
-
-# =================== ПОДПИСКА ===================
+# ================== SUBSCRIPTION ==================
 async def is_subscribed(user_id: int) -> bool:
-    """Проверяет подписку на канал. Админы всегда True. Если CHANNEL_ID пуст — True (fail open)."""
-    if is_admin(user_id):
-        return True
-    if not CHANNEL_ID:
-        return True
+    if is_admin(user_id): return True
+    if not CHANNEL_ID: return True
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         return member.status in ("member", "administrator", "creator")
@@ -128,40 +184,29 @@ async def is_subscribed(user_id: int) -> bool:
         log.warning("is_subscribed failed for %s: %s", user_id, e)
         return True
 
-
 def sub_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_URL)],
-        [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")],
-    ])
-
+        [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")]])
 
 async def send_sub_prompt(message: Message):
-    if not CHANNEL_URL:
-        return
+    if not CHANNEL_URL: return
     await message.answer(
         "🔒 <b>Доступ только для подписчиков</b>\n\n"
-        f"Чтобы пользоваться ботом, подпишись на наш канал:\n"
-        f"👉 <a href=\"{CHANNEL_URL}\">{CHANNEL_URL.replace('https://t.me/', '@')}</a>\n\n"
-        "После подписки нажми кнопку <b>«Я подписался»</b>.",
-        parse_mode="HTML",
-        reply_markup=sub_kb(),
-        disable_web_page_preview=True,
-    )
-
+        f"Подпишись на канал:\n👉 <a href=\"{CHANNEL_URL}\">{CHANNEL_URL.replace('https://t.me/', '@')}</a>\n\n"
+        "После подписки нажми <b>«Я подписался»</b>.",
+        parse_mode="HTML", reply_markup=sub_kb(), disable_web_page_preview=True)
 
 class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
-        if user is None:
-            return await handler(event, data)
+        if user is None: return await handler(event, data)
         try:
             if hasattr(event, "text") and event.text and event.text.startswith("/start"):
                 return await handler(event, data)
             if hasattr(event, "data") and event.data == "check_sub":
                 return await handler(event, data)
-        except Exception:
-            pass
+        except Exception: pass
         if not await is_subscribed(user.id):
             if isinstance(event, CallbackQuery):
                 try: await event.answer("🔒 Сначала подпишись на канал", show_alert=True)
@@ -169,23 +214,19 @@ class SubscriptionMiddleware(BaseMiddleware):
                 try: await send_sub_prompt(event.message)
                 except: pass
                 return
-            try:
-                await send_sub_prompt(event)
+            try: await send_sub_prompt(event)
             except: pass
             return
         return await handler(event, data)
 
-
-# =================== xRocket ===================
+# ================== XROCKET ==================
 async def xrocket_request(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{XROCKET_API_BASE}{path}"
     headers = {"Authorization": f"Bearer {XROCKET_API_KEY}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as http:
         r = await http.request(method, url, json=body or {}, headers=headers)
-        try:
-            data = r.json()
-        except Exception:
-            data = {"raw": r.text}
+        try: data = r.json()
+        except Exception: data = {"raw": r.text}
         if r.status_code not in (200, 201):
             log.error("xRocket %s %s -> %s %s", method, path, r.status_code, data)
             msg = data.get("message") or data.get("detail") or data.get("error") or f"HTTP {r.status_code}"
@@ -193,26 +234,22 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
             raise Exception(f"{msg}")
         return data
 
-
 async def xrocket_create_invoice(amount, description, req_id, currency="USDT"):
-    payload = {"amount": float(amount), "asset": currency, "description": description,
-               "payload": req_id}
+    payload = {"amount": float(amount), "asset": currency, "description": description, "payload": req_id}
     data = await xrocket_request("POST", "/api/v1/invoices", payload)
     link = data.get("link") or data.get("url") or data.get("invoiceUrl")
     inv_id = data.get("id") or data.get("invoiceId")
     if not link: raise Exception(f"xRocket не вернул ссылку: {data}")
     return {"id": inv_id, "link": link, "raw": data}
 
-
 async def xrocket_create_payout(user_id, amount, comment, req_id, currency="USDT"):
-    payload = {"target": str(user_id), "asset": currency,
-               "amount": float(amount), "description": comment, "payload": req_id}
+    payload = {"target": str(user_id), "asset": currency, "amount": float(amount),
+               "description": comment, "payload": req_id}
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
     payout_id = data.get("payoutId") or data.get("id")
     return {"id": payout_id, "raw": data}
 
-
-# =================== math / PF ===================
+# ================== MATH / PF ==================
 def pf_rand(ss, cs, n):
     h = hmac.new(ss.encode(), f"{cs}:{n}".encode(), hashlib.sha256).hexdigest()
     return int(h[:13], 16) / float(0xFFFFFFFFFFFFF)
@@ -247,21 +284,15 @@ def dice_result(ss, cs, n):
     return int(pf_rand(ss, cs, n) * 6) + 1
 
 def plinko_path(ss, cs, n, rows):
-    idx = 0
-    path = []
+    idx = 0; path = []
     for i in range(rows):
         r = pf_rand(ss, cs, n * 1000 + i)
         step = 1 if r >= 0.5 else 0
-        path.append(step)
-        idx += step
+        path.append(step); idx += step
     return idx, path
 
 def tower_step_positions(ss, cs, n, levels=6):
-    positions = []
-    for i in range(levels):
-        r = pf_rand(ss, cs, n * 100 + i)
-        positions.append(int(r * 3))
-    return positions
+    return [int(pf_rand(ss, cs, n * 100 + i) * 3) for i in range(levels)]
 
 def tower_mult(level):
     if level <= 0: return 1.0
@@ -287,8 +318,7 @@ def bj_value(cards):
         total -= 10; aces -= 1
     return total
 
-
-# =================== auth ===================
+# ================== AUTH ==================
 def validate_init_data(init_data, bot_token):
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -307,11 +337,10 @@ async def get_current_user(x_telegram_init_data: str = Header(None, alias="X-Tel
     u = validate_init_data(x_telegram_init_data, BOT_TOKEN)
     if not u: raise HTTPException(401, "invalid init data")
     if not await is_subscribed(int(u["id"])):
-        raise HTTPException(403, "subscription required")
+        raise HTTPException(403, "subscription_required")
     return u
 
-
-# =================== DB helpers ===================
+# ================== DB ==================
 async def get_or_create_profile(tg_user):
     tg_id = int(tg_user["id"])
     r = await sb(supabase.table("profiles").select("*").eq("telegram_id", tg_id))
@@ -370,8 +399,62 @@ def referral_info_sync(profile):
     ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{profile['telegram_id']}" if BOT_USERNAME else ""
     return {"link": ref_link, "share": REFERRAL_SHARE}
 
+# ================== WAGER ==================
+async def apply_wager_progress(uid, bet: float):
+    try:
+        bet = float(bet)
+        if bet <= 0: return
+        r = await sb(supabase.table("profiles").select(
+            "wager_required, wager_progress, bonus_active").eq("id", uid))
+        if not r.data: return
+        row = r.data[0]
+        if not row.get("bonus_active"): return
+        new_progress = round(float(row["wager_progress"] or 0) + bet, 8)
+        req = float(row["wager_required"] or 0)
+        done = new_progress >= req
+        update = {"wager_progress": new_progress}
+        if done: update["bonus_active"] = False
+        await sb(supabase.table("profiles").update(update).eq("id", uid))
+        if done: log.info("wager complete uid=%s req=%s", uid, req)
+    except Exception:
+        log.exception("apply_wager_progress failed")
 
-# =================== payments ===================
+async def check_wager_lock(profile):
+    if not profile.get("bonus_active"): return
+    req = float(profile.get("wager_required") or 0)
+    prog = float(profile.get("wager_progress") or 0)
+    if prog < req:
+        left = round(req - prog, 2)
+        raise HTTPException(400, f"🎰 Бонус активен. Отыграй ещё {left} ₮ (прогресс {prog:.2f}/{req:.2f})")
+
+async def check_bonus_max_bet(profile, bet: float):
+    if not profile.get("bonus_active"): return
+    mb = profile.get("bonus_max_bet")
+    if mb and float(bet) > float(mb):
+        raise HTTPException(400, f"🎰 Пока бонус активен, макс. ставка {float(mb):.2f} ₮")
+
+async def check_bonus_game(profile, game: str):
+    if not profile.get("bonus_active"): return
+    allowed = profile.get("bonus_allowed_games")
+    if allowed is None: return
+    if not isinstance(allowed, list): return
+    if game not in allowed:
+        if not allowed:
+            raise HTTPException(400, "🎰 Бонус можно только отыграть выводом. Игры заблокированы.")
+        raise HTTPException(400, f"🎰 С бонусом доступны только: {', '.join(allowed)}")
+
+def _bonus_info(p: dict) -> dict:
+    return {
+        "bonus_active": bool(p.get("bonus_active")),
+        "wager_required": float(p.get("wager_required") or 0),
+        "wager_progress": float(p.get("wager_progress") or 0),
+        "bonus_amount": float(p.get("bonus_amount") or 0),
+        "bonus_code": p.get("bonus_code"),
+        "bonus_max_bet": float(p["bonus_max_bet"]) if p.get("bonus_max_bet") else None,
+        "bonus_allowed_games": p.get("bonus_allowed_games"),
+    }
+
+# ================== PAYMENTS ==================
 async def create_deposit_invoice(profile, amount, currency="USDT"):
     if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "неподдерживаемая валюта")
     cid = f"dep_{profile['id'][:8]}_{int(time.time())}"
@@ -399,7 +482,8 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
             dt = datetime.fromisoformat(last.data[0]["created_at"].replace("Z", "+00:00"))
             left = WITHDRAW_COOLDOWN_MIN * 60 - (datetime.now(timezone.utc) - dt).total_seconds()
             if left > 0:
-                m, s = divmod(int(left), 60); raise HTTPException(400, f"после депозита подожди {m}м {s}с")
+                m, s = divmod(int(left), 60)
+                raise HTTPException(400, f"после депозита подожди {m}м {s}с")
         except HTTPException: raise
         except Exception: log.exception("cooldown check failed")
     spent = await daily_withdrawn(profile["id"])
@@ -415,8 +499,7 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
         "meta": {"payout_id": payout.get("id")}}))
     return payout
 
-
-# =================== crash loop ===================
+# ================== CRASH LOOP ==================
 async def crash_auto_cashout_watcher(round_id: str, started_at: float, crash_point_val: float):
     try:
         while True:
@@ -453,7 +536,6 @@ async def crash_auto_cashout_watcher(round_id: str, started_at: float, crash_poi
     except asyncio.CancelledError: pass
     except Exception: log.exception("auto cashout watcher error")
 
-
 async def crash_loop():
     global crash_state
     await asyncio.sleep(3)
@@ -472,8 +554,7 @@ async def crash_loop():
             started = time.time()
             await sb(supabase.table("crash_rounds").update({
                 "status": "running", "started_at": datetime.now(timezone.utc).isoformat()}).eq("id", round_id))
-            crash_state["status"] = "running"
-            crash_state["started_at"] = started
+            crash_state["status"] = "running"; crash_state["started_at"] = started
             auto_task = asyncio.create_task(crash_auto_cashout_watcher(round_id, started, cp))
             crash_state["auto_task"] = auto_task
             duration = max(0.4, math.log(cp) / math.log(1.07)) if cp > 1.0 else 0.4
@@ -495,14 +576,13 @@ async def crash_loop():
             log.exception("crash loop error: %s", e)
             await asyncio.sleep(5)
 
-
-# =================== aiogram ===================
+# ================== AIOGRAM ==================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎲 Играть в кубы", callback_data="menu:dice")],
+        [InlineKeyboardButton(text="🎲 Предсказания", callback_data="pg:home")],
         [InlineKeyboardButton(text="💰 Пополнить", callback_data="menu:deposit"),
          InlineKeyboardButton(text="💸 Вывести", callback_data="menu:withdraw")],
         [InlineKeyboardButton(text="👥 Друзья (5%)", callback_data="menu:ref"),
@@ -520,8 +600,68 @@ def fmt_stats(s, balance, first_name):
             f"🎯 Ставок: <b>{s['bets']:.2f}</b>\n🏆 Выигрышей: <b>{s['wins']:.2f}</b>\n"
             f"🎮 Игр: <b>{s['games']}</b>\n📊 Профит: <b>{s['net']:+.2f}</b>")
 
+# ================== PREDICTION KEYBOARDS ==================
+def pred_home_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎲 Кубик", callback_data="pgm:dice")],
+        [InlineKeyboardButton(text="🏀 Баскетбол", callback_data="pgm:basket")],
+        [InlineKeyboardButton(text="🎯 Дартс", callback_data="pgm:dart")],
+        [InlineKeyboardButton(text="⚽ Футбол", callback_data="pgm:football")],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
 
-# =================== ADMIN ===================
+def pred_bet_kb(game):
+    amounts = [0.5, 1, 5, 10, 25, 50]
+    rows = []
+    for i in range(0, len(amounts), 3):
+        rows.append([InlineKeyboardButton(text=f"{a} ₮", callback_data=f"pgb:{game}:{a}") for a in amounts[i:i+3]])
+    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data=f"pgcb:{game}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="pg:home"),
+                 InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def pred_type_kb(game, bet):
+    back_row = [InlineKeyboardButton(text="⬅️ Ставка", callback_data=f"pgm:{game}"),
+                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]
+    if game == "dice":
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Чёт", callback_data=f"pgr:{game}:{bet}:even"),
+             InlineKeyboardButton(text="Нечёт", callback_data=f"pgr:{game}:{bet}:odd")],
+            [InlineKeyboardButton(text="1-3", callback_data=f"pgr:{game}:{bet}:low"),
+             InlineKeyboardButton(text="4-6", callback_data=f"pgr:{game}:{bet}:high")],
+            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
+            back_row])
+    if game == "basket":
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Забил 3-5", callback_data=f"pgr:{game}:{bet}:high"),
+             InlineKeyboardButton(text="Промазал 1-2", callback_data=f"pgr:{game}:{bet}:low")],
+            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
+            back_row])
+    if game == "dart":
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔴 Красное 1-3", callback_data=f"pgr:{game}:{bet}:red")],
+            [InlineKeyboardButton(text="⚪ Белое 4-5", callback_data=f"pgr:{game}:{bet}:white")],
+            [InlineKeyboardButton(text="🎯 Центр 6", callback_data=f"pgr:{game}:{bet}:center")],
+            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
+            back_row])
+    if game == "football":
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚽ Гол 4-5", callback_data=f"pgr:{game}:{bet}:goal"),
+             InlineKeyboardButton(text="❌ Мимо 1-3", callback_data=f"pgr:{game}:{bet}:miss")],
+            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
+            back_row])
+    return InlineKeyboardMarkup(inline_keyboard=[back_row])
+
+def pred_number_kb(game, bet):
+    max_n = DICE_GAMES[game]["max"]
+    rows = []; row = []
+    for n in range(1, max_n + 1):
+        row.append(InlineKeyboardButton(text=str(n), callback_data=f"pgr:{game}:{bet}:num:{n}"))
+        if len(row) == 3: rows.append(row); row = []
+    if row: rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"pgb:{game}:{bet}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ================== ADMIN HELPERS ==================
 def admin_only(message: Message) -> bool:
     return message.from_user and is_admin(message.from_user.id)
 
@@ -531,12 +671,10 @@ async def admin_get_user(message: Message, arg: str):
     if arg.startswith("@"):
         r = await sb(supabase.table("profiles").select("*").eq("username", arg[1:]))
         return r.data[0] if r.data else None
-    try:
-        return await get_profile_by_tg(int(arg))
-    except Exception:
-        return None
+    try: return await get_profile_by_tg(int(arg))
+    except Exception: return None
 
-
+# ================== ADMIN COMMANDS ==================
 @dp.message(Command("ahelp"))
 async def cmd_ahelp(message: Message):
     if not admin_only(message): return
@@ -545,13 +683,11 @@ async def cmd_ahelp(message: Message):
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎮 Управление играми</b>\n"
         "/astatus — какие игры вкл/выкл\n"
-        "/aon GAME · /aoff GAME\n"
-        "/aonall · /aoffall\n"
-        "Игры: crash, mines, roulette, dice, plinko, blackjack, tower\n"
+        "/aon GAME · /aoff GAME · /aonall · /aoffall\n"
+        "Игры: crash, mines, roulette, dice, plinko, blackjack, tower, basket, dart, football\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎮 Активные игры</b>\n"
-        "/aendgame ID [lose]\n"
-        "/aendgameall · /aactive ID · /aactivelist · /acleargames\n"
+        "/aendgame ID [lose] · /aendgameall · /aactive ID · /aactivelist · /acleargames\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>👤 Юзеры</b>\n"
         "/auser ID · /afind @username · /awhois ID\n"
@@ -567,8 +703,11 @@ async def cmd_ahelp(message: Message):
         "/atx ID · /atxlast N · /arefund TX_ID\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎟 Промо</b>\n"
-        "/anewpromo CODE SUM [MAX] · /alistpromos · /adelpromo CODE\n"
-        "/adelallpromos · /apromoinfo CODE\n"
+        "/anewpromo CODE SUM [WAGER] [USES] [MAX_BET] [GAMES]\n"
+        "/alistpromos · /adelpromo CODE · /adelallpromos · /apromoinfo CODE\n"
+        "/awager ID · /aresetwager ID\n"
+        "/apromogames CODE all|none|dice,mines\n"
+        "/asetbonusgames ID all|none|dice,mines\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📢 Сообщения</b>\n"
         "/abroadcast TXT · /apush ID TXT\n"
@@ -582,7 +721,6 @@ async def cmd_ahelp(message: Message):
         "/ahealth · /alogs N · /aclearlogs N · /aadmins",
         parse_mode="HTML")
 
-
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     if not admin_only(message): return
@@ -591,16 +729,13 @@ async def cmd_admin(message: Message):
         f"RTP {100-HOUSE_EDGE*100:.0f}% · HE {HOUSE_EDGE*100:.1f}%\n"
         f"Мин ставка {MIN_BET} · макс {MAX_BET}\n"
         f"Мин деп {MIN_DEPOSIT} · мин вывод {MIN_WITHDRAW}\n"
-        f"Лимит/сутки {MAX_WITHDRAW_DAILY}\n"
-        f"Кулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
+        f"Лимит/сутки {MAX_WITHDRAW_DAILY}\nКулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
         f"Рефералка {REFERRAL_SHARE*100:.0f}%\n"
+        f"Daily bonus: {DAILY_BONUS} ₮ / {BONUS_COOLDOWN_H}ч\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
         f"Игры вкл: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}\n"
         f"Канал: {CHANNEL_ID or '— не задан —'}\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "Все команды: /ahelp",
-        parse_mode="HTML")
-
+        "━━━━━━━━━━━━━━━━━━━\nВсе команды: /ahelp", parse_mode="HTML")
 
 @dp.message(Command("astatus"))
 async def cmd_astatus(message: Message):
@@ -638,7 +773,6 @@ async def cmd_aoffall(message: Message):
     for g in GAMES_ENABLED: GAMES_ENABLED[g] = False
     await message.answer("⛔ Все игры выключены")
 
-
 @dp.message(Command("aendgame"))
 async def cmd_aendgame(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -659,9 +793,7 @@ async def cmd_aendgame(message: Message, command: CommandObject):
     await clear_active_round(p["id"])
     await log_round(p["id"], game, bet, {"admin_end": True, "mode": mode},
                     0 if mode != "lose" else -bet, "", 0)
-    await message.answer(
-        f"✅ <b>{game}</b> завершена. Режим: {'возврат' if mode != 'lose' else 'без возврата'}\nСтавка: {bet:.2f}",
-        parse_mode="HTML")
+    await message.answer(f"✅ <b>{game}</b> завершена. Режим: {'возврат' if mode != 'lose' else 'без возврата'}\nСтавка: {bet:.2f}", parse_mode="HTML")
 
 @dp.message(Command("aendgameall"))
 async def cmd_aendgameall(message: Message):
@@ -675,8 +807,7 @@ async def cmd_aendgameall(message: Message):
             await sb_rpc("change_balance", {"p_user_id": uid, "p_delta": bet})
             await sb(supabase.table("transactions").insert({
                 "user_id": uid, "type": "admin", "amount": bet, "currency": "USDT",
-                "status": "completed",
-                "meta": {"by": message.from_user.id, "action": "endgame_refund_all"}}))
+                "status": "completed", "meta": {"by": message.from_user.id, "action": "endgame_refund_all"}}))
             await sb(supabase.table("active_rounds").delete().eq("user_id", uid))
             total += bet; ok += 1
         except Exception as e: log.exception("aendgameall fail: %s", e)
@@ -712,8 +843,6 @@ async def cmd_acleargames(message: Message):
     await sb(supabase.table("active_rounds").delete().neq("user_id", "00000000-0000-0000-0000-000000000000"))
     await message.answer("✅ Все активные игры удалены")
 
-
-# ---- Юзеры ----
 @dp.message(Command("auser"))
 async def cmd_auser(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -724,9 +853,13 @@ async def cmd_auser(message: Message, command: CommandObject):
     ban = "🚫 ЗАБАНЕН" if p.get("is_banned") else "✅ активен"
     ar = await get_active_round(p["id"])
     active_line = f"\n🎮 активная: <b>{ar['game_type']}</b> ({float(ar['bet_amount']):.2f})" if ar else ""
+    bonus_line = ""
+    if p.get("bonus_active"):
+        bonus_line = (f"\n🎰 Бонус: {float(p.get('wager_progress') or 0):.2f}"
+                      f"/{float(p.get('wager_required') or 0):.2f}")
     await message.answer(
         f"👤 <b>{p.get('first_name') or '—'}</b> @{p.get('username') or '—'}\n"
-        f"🆔 <code>{p['telegram_id']}</code>\n💎 <b>{float(p['balance']):.2f}</b>\nСтатус: {ban}{active_line}\n"
+        f"🆔 <code>{p['telegram_id']}</code>\n💎 <b>{float(p['balance']):.2f}</b>\nСтатус: {ban}{active_line}{bonus_line}\n"
         f"📥 {s['deposits']:.2f} · 📤 {s['withdrawals']:.2f}\n"
         f"🎯 {s['bets']:.2f} · 🏆 {s['wins']:.2f}\n🎮 {s['games']} · 📊 {s['net']:+.2f}",
         parse_mode="HTML")
@@ -742,8 +875,7 @@ async def cmd_afind(message: Message, command: CommandObject):
     await message.answer(
         f"👤 <b>{p.get('first_name') or '—'}</b> @{p.get('username') or '—'}\n"
         f"🆔 <code>{p['telegram_id']}</code>\n💎 {float(p['balance']):.2f}\n{ban}\n"
-        f"Игр: {s['games']} · профит: {s['net']:+.2f}",
-        parse_mode="HTML")
+        f"Игр: {s['games']} · профит: {s['net']:+.2f}", parse_mode="HTML")
 
 @dp.message(Command("awhois"))
 async def cmd_awhois(message: Message, command: CommandObject):
@@ -755,8 +887,7 @@ async def cmd_awhois(message: Message, command: CommandObject):
     extra = f"\n🎮 в игре: <b>{ar['game_type']}</b>" if ar else ""
     await message.answer(
         f"👤 {p.get('first_name') or '—'} @{p.get('username') or '—'}\n"
-        f"🆔 <code>{p['telegram_id']}</code>\n💎 {float(p['balance']):.2f}{extra}",
-        parse_mode="HTML")
+        f"🆔 <code>{p['telegram_id']}</code>\n💎 {float(p['balance']):.2f}{extra}", parse_mode="HTML")
 
 @dp.message(Command("agive"))
 async def cmd_agive(message: Message, command: CommandObject):
@@ -837,8 +968,7 @@ async def cmd_abanlist(message: Message):
     r = await sb(supabase.table("profiles").select("telegram_id, first_name, username, ban_reason")
                  .eq("is_banned", True).limit(50))
     if not r.data: return await message.answer("Забаненных нет")
-    lines = [f"• <code>{p['telegram_id']}</code> {p.get('first_name') or ''} — {p.get('ban_reason') or '—'}"
-             for p in r.data]
+    lines = [f"• <code>{p['telegram_id']}</code> {p.get('first_name') or ''} — {p.get('ban_reason') or '—'}" for p in r.data]
     await message.answer("<b>🚫 Забаненные:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("apause"))
@@ -868,8 +998,7 @@ async def cmd_anote(message: Message, command: CommandObject):
     if not p: return await message.answer("Юзер не найден")
     meta = p.get("admin_notes") or []
     if not isinstance(meta, list): meta = []
-    meta.append({"by": message.from_user.id, "text": parts[1],
-                 "at": datetime.now(timezone.utc).isoformat()})
+    meta.append({"by": message.from_user.id, "text": parts[1], "at": datetime.now(timezone.utc).isoformat()})
     try:
         await sb(supabase.table("profiles").update({"admin_notes": meta}).eq("id", p["id"]))
     except Exception as e:
@@ -906,8 +1035,6 @@ async def cmd_aresetserver(message: Message, command: CommandObject):
     await sb(supabase.table("profiles").update({"client_seed": new_seed}).eq("id", p["id"]))
     await message.answer(f"✅ Новый client_seed:\n<code>{new_seed}</code>", parse_mode="HTML")
 
-
-# ---- Статистика ----
 @dp.message(Command("astats"))
 async def cmd_astats(message: Message):
     if not admin_only(message): return
@@ -922,8 +1049,8 @@ async def cmd_astats(message: Message):
         await message.answer(
             f"👥 Юзеров: <b>{len(users)}</b>\n💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f}</b>\n"
             f"📥 Депозиты: <b>{dep:.2f}</b>\n📤 Выводы: <b>{wd:.2f}</b>\n"
-            f"🎯 Оборот: <b>{total_bets:.2f}</b>\n📈 GGR: <b>{ggr:+.2f}</b>\n"
-            f"🎮 Игр: {len(rounds)}", parse_mode="HTML")
+            f"🎯 Оборот: <b>{total_bets:.2f}</b>\n📈 GGR: <b>{ggr:+.2f}</b>\n🎮 Игр: {len(rounds)}",
+            parse_mode="HTML")
     except Exception as e: await message.answer(f"❌ {e}")
 
 @dp.message(Command("aggr"))
@@ -1007,7 +1134,7 @@ async def cmd_agames(message: Message):
     lines = []
     for g, a in sorted(agg.items(), key=lambda x: -x[1]["ggr"]):
         rtp = (a["bets"] - a["ggr"]) / a["bets"] * 100 if a["bets"] else 0
-        lines.append(f"<b>{g}</b>: {a['count']} игр · оборот {a['bets']:.2f} · GGR {a['ggr']:+.2f} · RTP {rtp:.1f}%")
+        lines.append(f"<b>{g}</b>: {a['count']} · оборот {a['bets']:.2f} · GGR {a['ggr']:+.2f} · RTP {rtp:.1f}%")
     await message.answer("<b>🎲 По играм</b>\n" + ("\n".join(lines) if lines else "Нет данных"), parse_mode="HTML")
 
 @dp.message(Command("atop"))
@@ -1060,15 +1187,15 @@ async def cmd_arp(message: Message):
     if not admin_only(message): return
     await message.answer(
         f"📊 RTP: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
-        f"🎲 Кубик ×{DICE_PAYOUT} — {DICE_PAYOUT/6*100:.2f}%\n"
+        f"🎲 Кубик (число) ×5.76 — 96%\n🎲 Кубик (чёт/нечет, 1-3/4-6) ×1.92 — 96%\n"
+        f"🏀 Баскет — число ×4.8 · ставка на 3-5/1-2 ×1.6\n"
+        f"🎯 Дартс — число/центр ×5.76 · красное ×1.92 · белое ×2.88\n"
+        f"⚽ Футбол — гол ×2.4 · мимо ×1.6 · число ×4.8\n"
         f"💥 Crash — {(1-HOUSE_EDGE)*100:.2f}%\n💎 Mines — {(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🎡 Рулетка RB ×{ROUL_RB_PAYOUT}, дюжина ×{ROUL_DOZEN_PAYOUT}, число ×{ROUL_NUM_PAYOUT}\n"
-        f"🃏 Blackjack — ~{(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🎰 Plinko — ~{(1-HOUSE_EDGE)*100:.2f}%\n🗼 Tower — ~{(1-HOUSE_EDGE)*100:.2f}%",
+        f"🎡 Рулетка RB ×{ROUL_RB_PAYOUT}\n"
+        f"🃏 Blackjack / 🎰 Plinko / 🗼 Tower — ~{(1-HOUSE_EDGE)*100:.2f}%",
         parse_mode="HTML")
 
-
-# ---- Транзакции ----
 @dp.message(Command("atx"))
 async def cmd_atx(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -1120,27 +1247,69 @@ async def cmd_arefund(message: Message, command: CommandObject):
         "meta": {"by": message.from_user.id, "action": "refund", "orig_tx": tx_id}}))
     await message.answer(f"✅ Возврат {abs(refund):.2f}")
 
-
-# ---- Промо ----
+# ================== PROMO ADMIN ==================
 @dp.message(Command("anewpromo"))
 async def cmd_anewpromo(message: Message, command: CommandObject):
     if not admin_only(message): return
-    if not command.args: return await message.answer("/anewpromo CODE AMOUNT [MAX]")
-    parts = command.args.split()
-    if len(parts) < 2: return await message.answer("/anewpromo CODE AMOUNT [MAX]")
+    parts = (command.args or "").split()
+    if len(parts) < 2:
+        return await message.answer(
+            "📖 <b>Формат</b>:\n"
+            "<code>/anewpromo CODE AMOUNT [WAGER] [USES] [MAX_BET] [GAMES]</code>\n\n"
+            "<b>GAMES:</b> all | none | dice,mines,roulette,basket,dart,football,…\n\n"
+            "<b>Примеры:</b>\n"
+            "<code>/anewpromo SUMMER 5 40 100 1 dice,mines</code>\n"
+            "<code>/anewpromo FREE 1</code>\n"
+            "<code>/anewpromo ALLGAME 3 20 50 2 all</code>",
+            parse_mode="HTML")
     code = parts[0].upper().strip()
     try: amount = float(parts[1].replace(",", "."))
     except: return await message.answer("Сумма числом")
-    max_uses = None
-    if len(parts) >= 3:
-        try: max_uses = int(parts[2])
-        except: pass
     if amount <= 0: return await message.answer("Сумма > 0")
+
+    wager = 0.0
+    if len(parts) >= 3:
+        try: wager = float(parts[2].replace(",", ".").rstrip("xX"))
+        except: return await message.answer("Вейджер числом (например 40)")
+    max_uses = None
+    if len(parts) >= 4:
+        try: max_uses = int(parts[3])
+        except: pass
+    max_bet = None
+    if len(parts) >= 5:
+        try: max_bet = float(parts[4].replace(",", "."))
+        except: pass
+    allowed_games = None
+    if len(parts) >= 6:
+        g = parts[5].strip().lower()
+        if g == "all": allowed_games = None
+        elif g == "none": allowed_games = []
+        else:
+            allowed_games = [x.strip() for x in g.split(",") if x.strip()]
+            invalid = [x for x in allowed_games if x not in GAMES_ENABLED]
+            if invalid:
+                return await message.answer(f"❌ Неизвестные игры: {', '.join(invalid)}")
+
     try:
         await sb(supabase.table("promo_codes").insert({
-            "code": code, "amount": amount, "max_uses": max_uses, "created_by": message.from_user.id}))
-        await message.answer(f"✅ <code>{code}</code> · {amount} · {'∞' if not max_uses else max_uses}", parse_mode="HTML")
-    except Exception as e: await message.answer(f"❌ {e}")
+            "code": code, "amount": amount,
+            "wager_mult": wager, "max_uses": max_uses,
+            "max_bet": max_bet, "allowed_games": allowed_games,
+            "created_by": message.from_user.id,
+        }))
+        txt = f"✅ <b>Промокод создан</b>\nКод: <code>{code}</code>\nБонус: <b>{amount} ₮</b>\n"
+        if wager > 0:
+            txt += f"Вейджер: <b>×{wager}</b> (= {amount*wager:.2f} ₮)\n"
+            if max_bet: txt += f"Макс. ставка: <b>{max_bet} ₮</b>\n"
+        else:
+            txt += "Без вейджера 🎉\n"
+        if allowed_games is None: txt += "Игры: <b>все</b>\n"
+        elif allowed_games == []: txt += "Игры: <b>только вывод</b>\n"
+        else: txt += f"Игры: <b>{', '.join(allowed_games)}</b>\n"
+        txt += f"Активаций: {'∞' if not max_uses else max_uses}"
+        await message.answer(txt, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ {e}")
 
 @dp.message(Command("alistpromos"))
 async def cmd_alistpromos(message: Message):
@@ -1150,8 +1319,12 @@ async def cmd_alistpromos(message: Message):
     lines = []
     for p in r.data:
         uses = f"{p['uses']}/{p['max_uses']}" if p['max_uses'] else f"{p['uses']}/∞"
-        lines.append(f"• <code>{p['code']}</code> — {float(p['amount']):.2f} · {uses}")
-    await message.answer("<b>Промокоды:</b>\n" + "\n".join(lines), parse_mode="HTML")
+        w = p.get("wager_mult") or 0
+        w_txt = f"×{w:.0f}" if w > 0 else "—"
+        ag = p.get("allowed_games")
+        g_txt = "все" if ag is None else ("нет" if ag == [] else ",".join(ag))
+        lines.append(f"• <code>{p['code']}</code> · {float(p['amount']):.2f} ₮ · вейджер {w_txt} · игры: {g_txt} · {uses}")
+    await message.answer("<b>🎟 Промокоды:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("adelpromo"))
 async def cmd_adelpromo(message: Message, command: CommandObject):
@@ -1179,14 +1352,96 @@ async def cmd_apromoinfo(message: Message, command: CommandObject):
     p = r.data[0]
     uses = await sb(supabase.table("promo_uses").select("user_id, amount").eq("code", code))
     lines = [f"• user {str(u['user_id'])[:8]} — {float(u['amount']):.2f}" for u in uses.data or []]
+    w = float(p.get("wager_mult") or 0)
+    ag = p.get("allowed_games")
+    games_txt = "все" if ag is None else ("нет (только вывод)" if ag == [] else ", ".join(ag))
     await message.answer(
-        f"<b>🎟 {code}</b>\nСумма: {float(p['amount']):.2f}\n"
-        f"Использований: {p['uses']}/{p['max_uses'] or '∞'}\n\n"
+        f"<b>🎟 {code}</b>\nБонус: <b>{float(p['amount']):.2f} ₮</b>\n"
+        f"Вейджер: <b>×{w:.0f}</b>" + (f" (= {float(p['amount'])*w:.2f} ₮)" if w > 0 else " (нет)") + "\n"
+        f"Макс. ставка: <b>{float(p['max_bet']) if p.get('max_bet') else '—'}</b>\n"
+        f"Игры: <b>{games_txt}</b>\n"
+        f"Активаций: {p['uses']}/{p['max_uses'] or '∞'}\n\n"
         f"<b>Активировали:</b>\n" + ("\n".join(lines) if lines else "—"),
         parse_mode="HTML")
 
+@dp.message(Command("apromogames"))
+async def cmd_apromogames(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer(
+            "/apromogames CODE all|none|dice,mines\n"
+            f"Доступные: {', '.join(GAMES_ENABLED.keys())}", parse_mode="HTML")
+    code = parts[0].upper().strip()
+    val = parts[1].strip().lower()
+    r = await sb(supabase.table("promo_codes").select("code").eq("code", code))
+    if not r.data: return await message.answer(f"❌ Промокод <code>{code}</code> не найден", parse_mode="HTML")
+    if val == "all": new_val, label = None, "все игры"
+    elif val == "none": new_val, label = [], "только вывод"
+    else:
+        games = [g.strip().lower() for g in val.replace(" ", "").split(",") if g.strip()]
+        invalid = [g for g in games if g not in GAMES_ENABLED]
+        if invalid: return await message.answer(f"❌ Неизвестные игры: {', '.join(invalid)}")
+        if not games: return await message.answer("Пустой список")
+        new_val, label = games, ", ".join(games)
+    await sb(supabase.table("promo_codes").update({"allowed_games": new_val}).eq("code", code))
+    await message.answer(f"✅ <code>{code}</code> → <b>{label}</b>", parse_mode="HTML")
 
-# ---- Рассылки ----
+@dp.message(Command("asetbonusgames"))
+async def cmd_asetbonusgames(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer("/asetbonusgames <id> all|none|dice,mines")
+    p = await admin_get_user(message, parts[0])
+    if not p: return await message.answer("Юзер не найден")
+    val = parts[1].strip().lower()
+    if val == "all": new_val, label = None, "все игры"
+    elif val == "none": new_val, label = [], "только вывод"
+    else:
+        games = [g.strip().lower() for g in val.replace(" ", "").split(",") if g.strip()]
+        invalid = [g for g in games if g not in GAMES_ENABLED]
+        if invalid: return await message.answer(f"❌ Неизвестные: {', '.join(invalid)}")
+        new_val, label = games, ", ".join(games)
+    await sb(supabase.table("profiles").update({"bonus_allowed_games": new_val}).eq("id", p["id"]))
+    await message.answer(f"✅ {p['telegram_id']} → <b>{label}</b>", parse_mode="HTML")
+
+@dp.message(Command("awager"))
+async def cmd_awager(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/awager <id>")
+    p = await admin_get_user(message, command.args.strip())
+    if not p: return await message.answer("Юзер не найден")
+    if not p.get("bonus_active"):
+        return await message.answer(f"У {p['telegram_id']} нет активного бонуса")
+    req = float(p.get("wager_required") or 0)
+    prog = float(p.get("wager_progress") or 0)
+    pct = (prog / req * 100) if req > 0 else 0
+    ag = p.get("bonus_allowed_games")
+    games_txt = "все" if ag is None else ("нет (только вывод)" if ag == [] else ", ".join(ag))
+    await message.answer(
+        f"🎰 <b>Вейджер {p['telegram_id']}</b>\n"
+        f"Код: <code>{p.get('bonus_code') or '—'}</code>\n"
+        f"Бонус: {float(p.get('bonus_amount') or 0):.2f} ₮\n"
+        f"Отыграно: <b>{prog:.2f} / {req:.2f}</b> ({pct:.1f}%)\n"
+        f"Осталось: {max(0, req - prog):.2f} ₮\n"
+        f"Игры: <b>{games_txt}</b>",
+        parse_mode="HTML")
+
+@dp.message(Command("aresetwager"))
+async def cmd_aresetwager(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/aresetwager <id>")
+    p = await admin_get_user(message, command.args.strip())
+    if not p: return await message.answer("Юзер не найден")
+    await sb(supabase.table("profiles").update({
+        "bonus_active": False, "wager_required": 0,
+        "wager_progress": 0, "bonus_amount": 0,
+        "bonus_code": None, "bonus_max_bet": None,
+        "bonus_allowed_games": None}).eq("id", p["id"]))
+    await message.answer(f"✅ Вейджер сброшен для {p['telegram_id']}")
+
+# ================== BROADCAST ==================
 @dp.message(Command("abroadcast"))
 async def cmd_abroadcast(message: Message, command: CommandObject, state: FSMContext):
     if not admin_only(message): return
@@ -1229,21 +1484,18 @@ async def cmd_apush(message: Message, command: CommandObject):
         await message.answer(f"✅ Отправлено {p['telegram_id']}")
     except Exception as e: await message.answer(f"❌ {e}")
 
-
-# ---- Настройки ----
+# ================== SETTINGS ==================
 @dp.message(Command("asettings"))
 async def cmd_asettings(message: Message):
     if not admin_only(message): return
     await message.answer(
-        f"<b>⚙️ Настройки</b>\n"
-        f"MIN_BET: {MIN_BET}\nMAX_BET: {MAX_BET}\n"
+        f"<b>⚙️ Настройки</b>\nMIN_BET: {MIN_BET}\nMAX_BET: {MAX_BET}\n"
         f"MIN_DEPOSIT: {MIN_DEPOSIT}\nMIN_WITHDRAW: {MIN_WITHDRAW}\n"
-        f"MAX_WITHDRAW_DAILY: {MAX_WITHDRAW_DAILY}\n"
-        f"WITHDRAW_COOLDOWN_MIN: {WITHDRAW_COOLDOWN_MIN}\n"
-        f"HOUSE_EDGE: {HOUSE_EDGE}\nRTP: {(1-HOUSE_EDGE)*100:.1f}%\n"
-        f"REFERRAL_SHARE: {REFERRAL_SHARE}\n"
-        f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
-        f"Канал: {CHANNEL_ID or '— не задан —'}", parse_mode="HTML")
+        f"MAX_WITHDRAW_DAILY: {MAX_WITHDRAW_DAILY}\nWITHDRAW_COOLDOWN_MIN: {WITHDRAW_COOLDOWN_MIN}\n"
+        f"HOUSE_EDGE: {HOUSE_EDGE}\nRTP: {(1-HOUSE_EDGE)*100:.1f}%\nREFERRAL_SHARE: {REFERRAL_SHARE}\n"
+        f"DAILY_BONUS: {DAILY_BONUS}\nBONUS_COOLDOWN_H: {BONUS_COOLDOWN_H}\n"
+        f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\nКанал: {CHANNEL_ID or '— не задан —'}",
+        parse_mode="HTML")
 
 @dp.message(Command("asetminbet"))
 async def cmd_asetminbet(message: Message, command: CommandObject):
@@ -1333,8 +1585,6 @@ async def cmd_amaintenance(message: Message, command: CommandObject):
     else: return await message.answer("on или off")
     await message.answer(f"✅ Maintenance = {'ON' if MAINTENANCE else 'OFF'}")
 
-
-# ---- Система ----
 @dp.message(Command("ahealth"))
 async def cmd_ahealth(message: Message):
     if not admin_only(message): return
@@ -1352,8 +1602,7 @@ async def cmd_ahealth(message: Message):
     enabled = sum(1 for v in GAMES_ENABLED.values() if v)
     await message.answer(
         f"<b>🩺 Health</b>\nSupabase: {sb_status}\nXroket: {xr_status}\n"
-        f"Crash: <b>{crash_state['status']}</b>\n"
-        f"Активных игр: <b>{active_count}</b>\n"
+        f"Crash: <b>{crash_state['status']}</b>\nАктивных игр: <b>{active_count}</b>\n"
         f"Игр вкл: <b>{enabled}/{len(GAMES_ENABLED)}</b>\n"
         f"Канал: {CHANNEL_ID or '— не задан —'}\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
@@ -1394,8 +1643,7 @@ async def cmd_aadmins(message: Message):
     lines = [f"• <code>{aid}</code>" for aid in sorted(ADMIN_IDS)]
     await message.answer("<b>🛡 Админы:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
-
-# =================== USER COMMANDS ===================
+# ================== USER COMMANDS ==================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
     if not await is_subscribed(message.from_user.id):
@@ -1413,76 +1661,69 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
                 except: pass
     p = await get_or_create_profile(message.from_user.model_dump())
     extra = "\n\n🔐 <i>У тебя доступ к /admin</i>" if is_admin(message.from_user.id) else ""
+    bonus_line = f"\n🎁 Ежедневный бонус: <b>{DAILY_BONUS} ₮</b>" if DAILY_BONUS > 0 else ""
     cur = p.get("preferred_currency") or "USDT"
     await message.answer(
         f"👋 <b>Добро пожаловать в GoldCash!</b>\n\n"
-        f"💎 Твой баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n"
+        f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>{bonus_line}\n\n"
         f"<b>Что можно делать:</b>\n"
-        f"🎲 Играть в кубы прямо в чате\n"
-        f"🌐 Открыть Mini App — там Mines, Roulette, Dice, Plinko, Blackjack, Tower\n"
-        f"💰 Пополнять и выводить через @xRocket\n"
-        f"👥 Приглашать друзей и получать {REFERRAL_SHARE*100:.0f}% с их проигрыша\n\n"
+        f"🎲 Предсказания: 🎲 кубик · 🏀 баскет · 🎯 дартс · ⚽ футбол\n"
+        f"🌐 Mini App — Mines, Roulette, Plinko, Blackjack, Tower, Crash\n"
+        f"💰 Пополнение и вывод через @xRocket\n"
+        f"👥 Друзья: {REFERRAL_SHARE*100:.0f}% от их проигрыша\n\n"
         f"Команды: /help{extra}",
         reply_markup=main_menu(), parse_mode="HTML")
-
 
 @dp.callback_query(F.data == "check_sub")
 async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
     if not await is_subscribed(cb.from_user.id):
         return await cb.answer("❌ Ты ещё не подписан на канал", show_alert=True)
     await cb.answer("✅ Подписка подтверждена", show_alert=False)
-    try:
-        await cb.message.delete()
+    try: await cb.message.delete()
     except: pass
     await state.clear()
     p = await get_or_create_profile(cb.from_user.model_dump())
     cur = p.get("preferred_currency") or "USDT"
     await cb.message.answer(
-        f"👋 <b>Добро пожаловать в GoldCash!</b>\n\n"
-        f"💎 Твой баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n"
-        f"<b>Что можно делать:</b>\n"
-        f"🎲 Играть в кубы прямо в чате\n"
-        f"🌐 Открыть Mini App — там Mines, Roulette, Dice, Plinko, Blackjack, Tower\n"
-        f"💰 Пополнять и выводить через @xRocket\n"
-        f"👥 Приглашать друзей и получать {REFERRAL_SHARE*100:.0f}% с их проигрыша\n\n"
+        f"👋 <b>Добро пожаловать в GoldCash!</b>\n\n💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n"
         f"Команды: /help",
         reply_markup=main_menu(), parse_mode="HTML")
-
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
         "📖 <b>GoldCash — справка</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>🎮 Как играть</b>\n"
-        "• <b>Кубы</b> — /dice, выбери ставку и число 1–6. Если выпадет твоё — ×5.76.\n"
-        "• <b>Mini App</b> — жми «🌐 Открыть казино». Там Mines, Roulette, Dice, Plinko, Blackjack, Tower.\n"
+        "<b>🎲 Предсказания (в чате)</b>\n"
+        "• 🎲 Кубик — число 1–6, чёт/нечет, 1-3 / 4-6\n"
+        "• 🏀 Баскетбол — число 1–5, забил/промазал\n"
+        "• 🎯 Дартс — число 1–6, красное/белое/центр\n"
+        "• ⚽ Футбол — число 1–5, гол/мимо\n"
+        "Кнопка «🎲 Предсказания» в меню.\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>💰 Депозит и вывод</b>\n"
-        "• <b>Пополнить</b> — выбери сумму, откроется xRocket, оплати.\n"
-        "• <b>Вывести</b> — деньги придут на твой аккаунт @xRocket мгновенно.\n"
-        "• ⚠ После депозита вывод доступен через 15 минут (антифрод).\n"
-        "• Лимит вывода: 500 ₮ / сутки.\n"
+        "<b>🌐 Mini App</b>\nMines, Roulette, Plinko, Blackjack, Tower, Crash\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>👥 Друзья</b>\n"
-        f"Получай <b>{REFERRAL_SHARE*100:.0f}%</b> от проигрыша каждого приглашённого друга.\n"
-        "Своя ссылка — /start → кнопка «Друзья».\n"
+        "<b>💰 Платежи</b>\n"
+        "• Пополнение/вывод через @xRocket\n"
+        f"• После депозита вывод через {WITHDRAW_COOLDOWN_MIN} мин\n"
+        f"• Лимит вывода: {MAX_WITHDRAW_DAILY} ₮ / сутки\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>📊 Прочее</b>\n"
-        "/balance — баланс\n"
-        "/stats — личная статистика\n"
-        "/currency — валюта (USDT/TON/BTC/ETH/TRX)\n"
-        "/promo КОД — активировать промокод\n"
+        f"<b>👥 Рефералка</b> — {REFERRAL_SHARE*100:.0f}% от проигрыша друзей\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<i>RTP 96% · Provably Fair · Telegram Mini App</i>",
+        "<b>Команды</b>\n/balance · /stats · /currency · /promo КОД\n\n"
+        "<i>RTP 96% · Provably Fair</i>",
         parse_mode="HTML", reply_markup=back_kb())
-
 
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
     p = await get_or_create_profile(message.from_user.model_dump())
     cur = p.get("preferred_currency") or "USDT"
-    await message.answer(f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>", parse_mode="HTML", reply_markup=back_kb())
+    bonus = ""
+    if p.get("bonus_active"):
+        bonus = (f"\n🎰 Бонус: {float(p.get('wager_progress') or 0):.2f}"
+                 f"/{float(p.get('wager_required') or 0):.2f}")
+    await message.answer(f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>{bonus}",
+                         parse_mode="HTML", reply_markup=back_kb())
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -1496,10 +1737,6 @@ async def cmd_promo(message: Message, command: CommandObject):
     if not command.args: return await message.answer("Использование: /promo КОД")
     await try_redeem_promo(message, command.args.strip().upper())
 
-@dp.message(Command("dice"))
-async def cmd_dice(message: Message):
-    await message.answer("🎲 Выбери ставку:", reply_markup=dice_bet_kb())
-
 @dp.message(Command("currency"))
 async def cmd_currency(message: Message, command: CommandObject):
     if not command.args:
@@ -1510,9 +1747,34 @@ async def cmd_currency(message: Message, command: CommandObject):
     await sb(supabase.table("profiles").update({"preferred_currency": cur}).eq("id", p["id"]))
     await message.answer(f"✅ Валюта: <b>{cur}</b>", parse_mode="HTML", reply_markup=back_kb())
 
+@dp.message(Command("bonus"))
+async def cmd_bonus(message: Message):
+    if DAILY_BONUS <= 0:
+        return await message.answer("🎁 Бонус отключён")
+    p = await get_or_create_profile(message.from_user.model_dump())
+    await ensure_not_banned(p)
+    last = p.get("last_bonus_at")
+    if last:
+        try:
+            dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            left = BONUS_COOLDOWN_H * 3600 - (datetime.now(timezone.utc) - dt).total_seconds()
+            if left > 0:
+                m = int(left // 60)
+                return await message.answer(f"⏳ Следующий бонус через {m} мин.")
+        except: pass
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": DAILY_BONUS})
+    await sb(supabase.table("profiles").update(
+        {"last_bonus_at": datetime.now(timezone.utc).isoformat()}).eq("id", p["id"]))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bonus", "amount": DAILY_BONUS,
+        "currency": "USDT", "status": "completed", "meta": {"source": "daily"}}))
+    await message.answer(f"🎁 +<b>{DAILY_BONUS}</b> ₮", parse_mode="HTML",
+                         reply_markup=back_kb())
 
 async def try_redeem_promo(message: Message, code: str):
     p = await get_or_create_profile(message.from_user.model_dump())
+    if p.get("bonus_active"):
+        return await message.answer("🎰 Сначала отыграй текущий бонус")
     r = await sb(supabase.table("promo_codes").select("*").eq("code", code))
     if not r.data: return await message.answer("❌ Промокод не найден")
     promo = r.data[0]
@@ -1521,36 +1783,189 @@ async def try_redeem_promo(message: Message, code: str):
     used = await sb(supabase.table("promo_uses").select("id").eq("code", code).eq("user_id", p["id"]))
     if used.data: return await message.answer("❌ Ты уже использовал")
     amount = float(promo["amount"])
+    if promo.get("max_bonus"):
+        amount = min(amount, float(promo["max_bonus"]))
+    wager_mult = float(promo.get("wager_mult") or 0)
+    wager_required = round(amount * wager_mult, 8) if wager_mult > 0 else 0
+    max_bet = promo.get("max_bet")
+    allowed = promo.get("allowed_games")
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": amount})
+    await sb(supabase.table("profiles").update({
+        "bonus_active": wager_required > 0,
+        "bonus_amount": amount, "wager_required": wager_required, "wager_progress": 0,
+        "bonus_code": code, "bonus_max_bet": float(max_bet) if max_bet else None,
+        "bonus_allowed_games": allowed,
+    }).eq("id", p["id"]))
     await sb(supabase.table("promo_uses").insert({"code": code, "user_id": p["id"], "amount": amount}))
     await sb(supabase.table("promo_codes").update({"uses": promo["uses"] + 1}).eq("code", code))
     await sb(supabase.table("transactions").insert({
         "user_id": p["id"], "type": "bonus", "amount": amount,
-        "currency": "USDT", "status": "completed", "meta": {"source": "promo", "code": code}}))
-    await message.answer(f"✅ +<b>{amount}</b>", parse_mode="HTML")
+        "currency": "USDT", "status": "completed",
+        "meta": {"source": "promo", "code": code, "wager": wager_mult}}))
+    txt = f"✅ +<b>{amount}</b> ₮\n"
+    if wager_required > 0:
+        txt += f"🎰 Вейджер: <b>×{wager_mult}</b> (= {wager_required:.2f} ₮)\n"
+        if max_bet: txt += f"⚠️ Макс. ставка: {float(max_bet)} ₮\n"
+    if allowed is None: txt += "🎮 Все игры доступны"
+    elif allowed == []: txt += "🚫 Игры заблокированы (только вывод)"
+    else: txt += f"🎮 Только: {', '.join(allowed)}"
+    await message.answer(txt, parse_mode="HTML")
 
+# ================== PREDICTION GAME FLOW ==================
+@dp.callback_query(F.data == "pg:home")
+async def cb_pg_home(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text(
+        "🎲 <b>Предсказания</b>\n\nВыбери игру:",
+        parse_mode="HTML", reply_markup=pred_home_kb())
 
-def deposit_kb():
-    amounts = [1, 5, 10, 25, 50, 100]
-    rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dep:{a}") for a in amounts[i:i+3]]
-            for i in range(0, len(amounts), 3)]
-    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data="dep:custom")])
-    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+@dp.callback_query(F.data.startswith("pgm:"))
+async def cb_pg_game(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    game = cb.data.split(":")[1]
+    if game not in DICE_GAMES: return await cb.answer("Ошибка")
+    if not GAMES_ENABLED.get(game, True):
+        return await cb.answer(f"⛔ {DICE_GAMES[game]['name']} выключена", show_alert=True)
+    g = DICE_GAMES[game]
+    await cb.message.edit_text(
+        f"{g['emoji']} <b>{g['name']}</b>\nВыбери ставку:",
+        parse_mode="HTML", reply_markup=pred_bet_kb(game))
 
+@dp.callback_query(F.data.startswith("pgcb:"))
+async def cb_pg_custom_bet(cb: CallbackQuery, state: FSMContext):
+    game = cb.data.split(":")[1]
+    if game not in DICE_GAMES: return await cb.answer("Ошибка")
+    await state.set_state(PredictionInput.custom_bet)
+    await state.update_data(game=game)
+    await cb.message.edit_text(
+        f"✏️ Введи сумму ставки в ₮ (мин. {MIN_BET}, макс. {MAX_BET}):\n"
+        f"Или /cancel для отмены.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"pgm:{game}")]]))
 
-def withdraw_kb(balance):
-    candidates = [1, 5, 10, 25, 50, 100, 250, 500]
-    amounts = [a for a in candidates if a <= balance and a >= MIN_WITHDRAW]
-    rows = []
-    if amounts:
-        for i in range(0, len(amounts), 3):
-            rows.append([InlineKeyboardButton(text=f"{a} ₮", callback_data=f"wd:{a}") for a in amounts[i:i+3]])
-    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data="wd:custom")])
-    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+@dp.message(PredictionInput.custom_bet)
+async def fsm_pg_custom_bet(message: Message, state: FSMContext):
+    data = await state.get_data()
+    game = data.get("game")
+    try:
+        bet = float((message.text or "").replace(",", ".").strip())
+    except:
+        return await message.answer("❌ Не число")
+    if not (MIN_BET <= bet <= MAX_BET):
+        return await message.answer(f"❌ Ставка {MIN_BET}..{MAX_BET}")
+    await state.clear()
+    g = DICE_GAMES[game]
+    await message.answer(
+        f"{g['emoji']} <b>{g['name']}</b> · ставка <b>{bet} ₮</b>\nВыбери предсказание:",
+        parse_mode="HTML", reply_markup=pred_type_kb(game, bet))
 
+@dp.callback_query(F.data.startswith("pgb:"))
+async def cb_pg_bet(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    _, game, bet_s = cb.data.split(":")
+    if game not in DICE_GAMES: return await cb.answer("Ошибка")
+    bet = float(bet_s)
+    g = DICE_GAMES[game]
+    await cb.message.edit_text(
+        f"{g['emoji']} <b>{g['name']}</b> · ставка <b>{bet} ₮</b>\nВыбери предсказание:",
+        parse_mode="HTML", reply_markup=pred_type_kb(game, bet))
 
+@dp.callback_query(F.data.startswith("pgn:"))
+async def cb_pg_numbers(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    _, game, bet_s = cb.data.split(":")
+    if game not in DICE_GAMES: return await cb.answer("Ошибка")
+    bet = float(bet_s)
+    g = DICE_GAMES[game]
+    await cb.message.edit_text(
+        f"{g['emoji']} <b>{g['name']}</b> · ставка <b>{bet} ₮</b>\n"
+        f"Выбери точное число ({g['min']}–{g['max']}):",
+        parse_mode="HTML", reply_markup=pred_number_kb(game, bet))
+
+@dp.callback_query(F.data.startswith("pgr:"))
+async def cb_pg_run(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    parts = cb.data.split(":")
+    game = parts[1]; bet = float(parts[2]); ptype = parts[3]
+    pvalue = int(parts[4]) if len(parts) > 4 else None
+    if game not in DICE_GAMES: return await cb.answer("Ошибка")
+    if not GAMES_ENABLED.get(game, True):
+        return await cb.answer(f"⛔ Игра выключена", show_alert=True)
+
+    p = await get_or_create_profile(cb.from_user.model_dump())
+    try:
+        await ensure_not_banned(p)
+        await check_bonus_max_bet(p, bet)
+        await check_bonus_game(p, game)
+        await check_rate_limit(p["id"], "bet")
+    except HTTPException as e:
+        return await cb.answer(e.detail, show_alert=True)
+
+    if float(p["balance"]) < bet:
+        return await cb.answer("❌ Недостаточно средств", show_alert=True)
+
+    try:
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+        asyncio.create_task(apply_wager_progress(p["id"], bet))
+    except Exception as e:
+        return await cb.answer(f"Ошибка: {e}", show_alert=True)
+
+    g = DICE_GAMES[game]
+    pred_meta = DICE_PREDICTIONS[game][ptype]
+    label = pred_meta["label"]
+    if ptype == "num": label = f"Число {pvalue}"
+
+    await cb.message.edit_text(
+        f"{g['emoji']} <b>{g['name']}</b> · ставка <b>{bet} ₮</b>\n"
+        f"Твоё предсказание: <b>{label}</b>\n\n🎲 Бросаем…",
+        parse_mode="HTML")
+
+    try:
+        dice_msg = await bot.send_dice(chat_id=cb.message.chat.id, emoji=g["emoji"])
+        result = dice_msg.dice.value
+        await asyncio.sleep(3.5)
+    except Exception as e:
+        log.exception("send_dice failed")
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+        return await cb.message.edit_text(f"❌ Ошибка броска: {e}", reply_markup=back_kb())
+
+    win = eval_prediction(game, result, ptype, pvalue)
+    profit = -bet
+    payout = 0.0
+    if win:
+        payout = round(bet * pred_meta["mult"], 8)
+        profit = round(payout - bet, 8)
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
+            "status": "completed", "meta": {"game": game, "result": result}}))
+    else:
+        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+
+    await log_round(p["id"], game, bet,
+                    {"result": result, "pred": ptype, "value": pvalue, "win": win,
+                     "label": label, "mult": pred_meta["mult"]},
+                    profit, f"telegram_{game}", 0)
+
+    p2 = await get_or_create_profile(cb.from_user.model_dump())
+    balance = float(p2["balance"])
+
+    if win:
+        text = (f"{g['emoji']} <b>Выпало {result}</b> · твоё: {label}\n"
+                f"✅ <b>+{profit:.2f}</b> ₮ (×{pred_meta['mult']})\n\n"
+                f"💎 Баланс: <b>{balance:.2f}</b>")
+    else:
+        text = (f"{g['emoji']} <b>Выпало {result}</b> · твоё: {label}\n"
+                f"❌ <b>−{bet:.2f}</b> ₮\n\n"
+                f"💎 Баланс: <b>{balance:.2f}</b>")
+
+    again_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Ещё раз", callback_data=f"pgb:{game}:{bet}")],
+        [InlineKeyboardButton(text="🎲 Другая игра", callback_data="pg:home"),
+         InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
+    await bot.send_message(cb.message.chat.id, text, parse_mode="HTML", reply_markup=again_kb)
+
+# ================== MAIN MENU CALLBACKS ==================
 @dp.callback_query(F.data == "menu:main")
 async def cb_menu(cb: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1559,22 +1974,11 @@ async def cb_menu(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "menu:help")
 async def cb_help(cb: CallbackQuery):
     await cb.message.edit_text(
-        "📖 <b>GoldCash — справка</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>🎮 Игры</b>\n"
-        "• /dice — кубы прямо в чате\n"
-        "• Mini App — Mines, Roulette, Dice, Plinko, Blackjack, Tower\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>💰 Платежи</b>\n"
-        "• Пополнение и вывод через @xRocket\n"
-        "• Вывод после депозита — через 15 мин\n"
-        "• Лимит: 500 ₮ / сутки\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>👥 Рефералка</b>\n{REFERRAL_SHARE*100:.0f}% от проигрыша приглашённых друзей\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>Команды</b>\n"
-        "/balance · /stats · /currency · /promo\n\n"
-        "<i>RTP 96% · Provably Fair</i>",
+        "📖 <b>Справка</b>\n"
+        "🎲 Предсказания — /start → «Предсказания»\n"
+        "🌐 Mini App — кнопка в меню\n"
+        f"💰 Мин. вывод: {MIN_WITHDRAW} ₮\n"
+        f"👥 Рефералка: {REFERRAL_SHARE*100:.0f}%",
         parse_mode="HTML", reply_markup=back_kb())
 
 @dp.callback_query(F.data == "menu:stats")
@@ -1617,11 +2021,18 @@ async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
     p = await get_or_create_profile(cb.from_user.model_dump())
     bal = float(p["balance"]); cur = p.get("preferred_currency") or "USDT"
     spent = await daily_withdrawn(p["id"]); left = MAX_WITHDRAW_DAILY - spent
+    warn = ""
+    if p.get("bonus_active"):
+        req = float(p.get("wager_required") or 0)
+        prog = float(p.get("wager_progress") or 0)
+        if prog < req:
+            warn = f"\n🎰 ⚠️ Бонус: отыграй ещё {req-prog:.2f} ₮"
     hint = f"\n\n⚠️ Баланс {bal:.2f}, минимум {MIN_WITHDRAW}." if bal < MIN_WITHDRAW else ""
     await cb.message.edit_text(
         f"💸 <b>Вывод в {cur}</b>\nБаланс: <b>{bal:.2f}</b>\n"
-        f"Лимит/сутки: <b>{max(0,left):.2f}</b> из {MAX_WITHDRAW_DAILY:.0f}\nМинимум: {MIN_WITHDRAW}{hint}\n\n"
-        f"<b>⚠️ Средства приходят на @xRocket.</b>\n\nВыбери сумму:",
+        f"Лимит/сутки: <b>{max(0,left):.2f}</b> из {MAX_WITHDRAW_DAILY:.0f}\n"
+        f"Минимум: {MIN_WITHDRAW}{hint}{warn}\n\n"
+        f"<b>⚠️ Средства приходят на @xRocket.</b>\nВыбери сумму:",
         parse_mode="HTML", reply_markup=withdraw_kb(bal))
 
 @dp.callback_query(F.data.startswith("wd:"))
@@ -1638,13 +2049,16 @@ async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
     amount = float(val)
     if amount < MIN_WITHDRAW: return await cb.answer(f"Минимум {MIN_WITHDRAW}", show_alert=True)
     if float(p["balance"]) < amount: return await cb.answer("Недостаточно", show_alert=True)
+    try:
+        await check_wager_lock(p)
+    except HTTPException as e:
+        return await cb.answer(e.detail, show_alert=True)
     await cb.message.edit_text("⏳ Обработка…", reply_markup=back_kb())
     try: await do_withdraw(p, cb.from_user.id, amount, cur)
     except HTTPException as e: return await cb.message.edit_text(f"❌ {e.detail}", reply_markup=back_kb())
     except Exception as e:
         log.exception("payout failed"); return await cb.message.edit_text(f"❌ {e}", reply_markup=back_kb())
     await cb.message.edit_text(f"✅ Выплата <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=back_kb())
-
 
 @dp.message(AmountInput.deposit)
 async def fsm_deposit_amount(message: Message, state: FSMContext):
@@ -1669,7 +2083,12 @@ async def fsm_withdraw_amount(message: Message, state: FSMContext):
     p = await get_or_create_profile(message.from_user.model_dump())
     cur = p.get("preferred_currency") or "USDT"
     if amount < MIN_WITHDRAW: return await message.answer(f"❌ Минимум {MIN_WITHDRAW}")
-    if float(p["balance"]) < amount: return await message.answer(f"❌ Баланс: <b>{float(p['balance']):.2f}</b>", parse_mode="HTML")
+    if float(p["balance"]) < amount:
+        return await message.answer(f"❌ Баланс: <b>{float(p['balance']):.2f}</b>", parse_mode="HTML")
+    try:
+        await check_wager_lock(p)
+    except HTTPException as e:
+        return await message.answer(f"❌ {e.detail}")
     await state.clear()
     msg = await message.answer("⏳ Обработка…")
     try: await do_withdraw(p, message.from_user.id, amount, cur)
@@ -1677,69 +2096,24 @@ async def fsm_withdraw_amount(message: Message, state: FSMContext):
     except Exception as e: return await msg.edit_text(f"❌ {e}", reply_markup=back_kb())
     await msg.edit_text(f"✅ Выплата <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=back_kb())
 
-
-def dice_bet_kb():
-    amounts = [0.5, 1, 5, 10, 25, 50]
-    rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dice_bet:{a}") for a in amounts[i:i+3]]
+def deposit_kb():
+    amounts = [1, 5, 10, 25, 50, 100]
+    rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dep:{a}") for a in amounts[i:i+3]]
             for i in range(0, len(amounts), 3)]
+    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data="dep:custom")])
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def dice_num_kb(bet):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=str(n), callback_data=f"dnum:{n}:{bet}") for n in (1,2,3)],
-        [InlineKeyboardButton(text=str(n), callback_data=f"dnum:{n}:{bet}") for n in (4,5,6)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:dice"),
-         InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
-
-
-@dp.callback_query(F.data == "menu:dice")
-async def cb_dice(cb: CallbackQuery):
-    await cb.message.edit_text(f"🎲 <b>Кубы</b>\nЧисло 1–6, ×<b>{DICE_PAYOUT}</b>.\nСтавка:",
-                               parse_mode="HTML", reply_markup=dice_bet_kb())
-
-@dp.callback_query(F.data.startswith("dice_bet:"))
-async def cb_dice_bet(cb: CallbackQuery):
-    bet = float(cb.data.split(":")[1])
-    p = await get_or_create_profile(cb.from_user.model_dump())
-    if float(p["balance"]) < bet: return await cb.answer("Недостаточно", show_alert=True)
-    await cb.message.edit_text(f"🎲 Ставка <b>{bet}</b>. Число:", parse_mode="HTML", reply_markup=dice_num_kb(bet))
-
-@dp.callback_query(F.data.startswith("dnum:"))
-async def cb_dice_num(cb: CallbackQuery):
-    _, num_s, bet_s = cb.data.split(":")
-    num, bet = int(num_s), float(bet_s)
-    p = await get_or_create_profile(cb.from_user.model_dump())
-    if float(p["balance"]) < bet: return await cb.answer("Недостаточно", show_alert=True)
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
-    await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
-        "status": "completed", "meta": {"game": "dice", "chosen": num}}))
-    await cb.message.edit_text("🎲 Бросаем…", parse_mode="HTML")
-    dice_msg = await bot.send_dice(chat_id=cb.message.chat.id, emoji="🎲")
-    result = dice_msg.dice.value
-    await asyncio.sleep(3.5)
-    win = (result == num); profit = -bet
-    if win:
-        payout = round(bet * DICE_PAYOUT, 8); profit = round(payout - bet, 8)
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-        await sb(supabase.table("transactions").insert({
-            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
-            "status": "completed", "meta": {"game": "dice"}}))
-        text = f"🎲 <b>{result}</b> · твоё {num}\n✅ +{profit:.2f} (×{DICE_PAYOUT})"
-    else:
-        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-        text = f"🎲 <b>{result}</b> · твоё {num}\n❌ −{bet:.2f}"
-    await log_round(p["id"], "dice", bet, {"result": result, "chosen": num, "win": win},
-                    profit, "telegram_dice", 0)
-    p2 = await get_or_create_profile(cb.from_user.model_dump())
-    text += f"\n\n💎 <b>{float(p2['balance']):.2f}</b>"
-    again_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎲 Ещё раз", callback_data=f"dice_bet:{bet}")],
-        [InlineKeyboardButton(text="💰 Пополнить", callback_data="menu:deposit"),
-         InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
-    await bot.send_message(cb.message.chat.id, text, parse_mode="HTML", reply_markup=again_kb)
-
+def withdraw_kb(balance):
+    candidates = [1, 5, 10, 25, 50, 100, 250, 500]
+    amounts = [a for a in candidates if a <= balance and a >= MIN_WITHDRAW]
+    rows = []
+    if amounts:
+        for i in range(0, len(amounts), 3):
+            rows.append([InlineKeyboardButton(text=f"{a} ₮", callback_data=f"wd:{a}") for a in amounts[i:i+3]])
+    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data="wd:custom")])
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 @dp.callback_query(F.data == "menu:ref")
 async def cb_ref_menu(cb: CallbackQuery):
@@ -1756,19 +2130,17 @@ async def cb_ref_menu(cb: CallbackQuery):
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
-
-# =================== middleware register ===================
+# ================== MIDDLEWARE ==================
 dp.message.middleware(SubscriptionMiddleware())
 dp.callback_query.middleware(SubscriptionMiddleware())
 
-
-# =================== FastAPI ===================
+# ================== FASTAPI ==================
 @asynccontextmanager
 async def lifespan(app):
     global BOT_USERNAME
     me = await bot.get_me(); BOT_USERNAME = me.username
-    log.info("start · house_edge=%.3f · admins=%s · bot=@%s · channel=%s",
-             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—")
+    log.info("start · house_edge=%.3f · admins=%s · bot=@%s · channel=%s · daily_bonus=%s",
+             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—", DAILY_BONUS)
     task_bot = asyncio.create_task(dp.start_polling(bot))
     task_crash = asyncio.create_task(crash_loop())
     yield
@@ -1782,10 +2154,8 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                    allow_methods=["*"], allow_headers=["*"])
 
-
 @app.get("/")
 async def root(): return {"status": "ok"}
-
 
 @app.get("/api/config")
 async def config():
@@ -1794,20 +2164,19 @@ async def config():
         "min_deposit": MIN_DEPOSIT, "min_withdraw": MIN_WITHDRAW,
         "withdraw_cooldown_min": WITHDRAW_COOLDOWN_MIN, "max_withdraw_daily": MAX_WITHDRAW_DAILY,
         "referral_share": REFERRAL_SHARE, "currencies": SUPPORTED_CURRENCIES,
-        "maintenance": MAINTENANCE,
-        "games_enabled": GAMES_ENABLED,
+        "maintenance": MAINTENANCE, "games_enabled": GAMES_ENABLED,
         "channel_url": CHANNEL_URL,
+        "daily_bonus": DAILY_BONUS, "bonus_cooldown_h": BONUS_COOLDOWN_H,
         "rtp": round(1 - HOUSE_EDGE, 4),
         "payouts": {"dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
                     "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
                     "plinko": PLINKO_MULTS},
+        "dice_predictions": DICE_PREDICTIONS,
     }
-
 
 @app.post("/api/auth")
 async def auth(user: dict = Depends(get_current_user)):
     return await get_or_create_profile(user)
-
 
 def _profile_sync(user):
     tg_id = int(user["id"])
@@ -1829,17 +2198,16 @@ def _profile_sync(user):
             "ref_earnings": float(p.get("ref_earnings") or 0),
             "preferred_currency": p.get("preferred_currency") or "USDT",
             "is_banned": bool(p.get("is_banned")),
+            "bonus": _bonus_info(p),
             "stats": {"total_games": len(rounds), "total_wagered": round(bets, 2),
                       "total_profit": round(wins - bets, 2), "best_mult": 1.0,
                       "deposits": round(dep, 2), "withdrawals": round(wd, 2), "wins": round(wins, 2)}}
-
 
 @app.get("/api/profile")
 async def profile(user: dict = Depends(get_current_user)):
     try: return await asyncio.to_thread(_profile_sync, user)
     except Exception:
         log.exception("profile endpoint failed"); raise HTTPException(500, "profile error")
-
 
 @app.post("/api/profile/currency")
 async def set_currency(body: dict, user: dict = Depends(get_current_user)):
@@ -1848,7 +2216,6 @@ async def set_currency(body: dict, user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     await sb(supabase.table("profiles").update({"preferred_currency": currency}).eq("id", p["id"]))
     return {"ok": True, "currency": currency}
-
 
 def _live_sync():
     r = supabase.table("game_rounds").select("game_type, profit, bet_amount, profiles(username, first_name)") \
@@ -1863,12 +2230,10 @@ def _live_sync():
                     "profit": round(float(row["profit"]), 2), "mult": mult})
     return out
 
-
 @app.get("/api/live")
 async def live():
     try: return await asyncio.to_thread(_live_sync)
     except Exception: return []
-
 
 @app.get("/api/leaderboard")
 async def leaderboard(period: str = "week"):
@@ -1890,7 +2255,6 @@ async def leaderboard(period: str = "week"):
     try: return await asyncio.to_thread(_run)
     except Exception: return {"period": period, "items": []}
 
-
 @app.get("/api/referral")
 async def api_referral(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -1903,27 +2267,86 @@ async def api_referral(user: dict = Depends(get_current_user)):
                         "joined": u.get("created_at")} for u in invited]
     return info
 
-
 @app.post("/api/promo/redeem")
 async def api_promo_redeem(body: dict, user: dict = Depends(get_current_user)):
     code = (body.get("code") or "").strip().upper()
     if not code: raise HTTPException(400, "пустой код")
     p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
+    if p.get("bonus_active"):
+        raise HTTPException(400, "Сначала отыграй текущий бонус")
     r = await sb(supabase.table("promo_codes").select("*").eq("code", code))
     if not r.data: raise HTTPException(404, "промокод не найден")
     promo = r.data[0]
-    if promo.get("max_uses") and promo["uses"] >= promo["max_uses"]: raise HTTPException(400, "исчерпан")
+    exp = promo.get("expires_at")
+    if exp:
+        try:
+            exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > exp_dt: raise HTTPException(400, "промокод истёк")
+        except HTTPException: raise
+        except Exception: pass
+    if promo.get("max_uses") and promo["uses"] >= promo["max_uses"]:
+        raise HTTPException(400, "промокод исчерпан")
     used = await sb(supabase.table("promo_uses").select("id").eq("code", code).eq("user_id", p["id"]))
     if used.data: raise HTTPException(400, "уже использовал")
     amount = float(promo["amount"])
+    if promo.get("max_bonus"): amount = min(amount, float(promo["max_bonus"]))
+    wager_mult = float(promo.get("wager_mult") or 0)
+    wager_required = round(amount * wager_mult, 8) if wager_mult > 0 else 0
+    max_bet = promo.get("max_bet")
+    allowed = promo.get("allowed_games")
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": amount})
+    await sb(supabase.table("profiles").update({
+        "bonus_active": wager_required > 0, "bonus_amount": amount,
+        "wager_required": wager_required, "wager_progress": 0,
+        "bonus_code": code, "bonus_max_bet": float(max_bet) if max_bet else None,
+        "bonus_allowed_games": allowed}).eq("id", p["id"]))
     await sb(supabase.table("promo_uses").insert({"code": code, "user_id": p["id"], "amount": amount}))
     await sb(supabase.table("promo_codes").update({"uses": promo["uses"] + 1}).eq("code", code))
     await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "bonus", "amount": amount, "currency": "USDT",
-        "status": "completed", "meta": {"source": "promo", "code": code}}))
-    return {"ok": True, "amount": amount}
+        "user_id": p["id"], "type": "bonus", "amount": amount,
+        "currency": "USDT", "status": "completed",
+        "meta": {"source": "promo", "code": code, "wager": wager_mult}}))
+    return {"ok": True, "amount": amount, "wager_required": wager_required,
+            "wager_mult": wager_mult, "max_bet": float(max_bet) if max_bet else None,
+            "allowed_games": allowed}
 
+@app.get("/api/bonus/daily")
+async def bonus_status(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    if DAILY_BONUS <= 0:
+        return {"available": False, "amount": 0, "next_in_sec": 0}
+    last = p.get("last_bonus_at")
+    if last:
+        try:
+            dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            left = BONUS_COOLDOWN_H * 3600 - (datetime.now(timezone.utc) - dt).total_seconds()
+            if left > 0:
+                return {"available": False, "amount": DAILY_BONUS, "next_in_sec": int(left)}
+        except Exception: log.exception("bonus cooldown parse")
+    return {"available": True, "amount": DAILY_BONUS, "next_in_sec": 0}
+
+@app.post("/api/bonus/daily")
+async def bonus_claim(user: dict = Depends(get_current_user)):
+    if DAILY_BONUS <= 0: raise HTTPException(400, "бонус отключён")
+    p = await get_or_create_profile(user)
+    await ensure_not_banned(p)
+    last = p.get("last_bonus_at")
+    if last:
+        try:
+            dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            left = BONUS_COOLDOWN_H * 3600 - (datetime.now(timezone.utc) - dt).total_seconds()
+            if left > 0:
+                m = int(left // 60); raise HTTPException(400, f"бонус будет через {m} мин.")
+        except HTTPException: raise
+        except Exception: pass
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": DAILY_BONUS})
+    await sb(supabase.table("profiles").update(
+        {"last_bonus_at": datetime.now(timezone.utc).isoformat()}).eq("id", p["id"]))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bonus", "amount": DAILY_BONUS,
+        "currency": "USDT", "status": "completed", "meta": {"source": "daily"}}))
+    return {"ok": True, "amount": DAILY_BONUS}
 
 @app.get("/api/history/games")
 async def history_games(user: dict = Depends(get_current_user)):
@@ -1931,13 +2354,11 @@ async def history_games(user: dict = Depends(get_current_user)):
     return (await sb(supabase.table("game_rounds").select("*").eq("user_id", p["id"])
                      .order("created_at", desc=True).limit(30))).data or []
 
-
 @app.get("/api/history/transactions")
 async def history_tx(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     return (await sb(supabase.table("transactions").select("*").eq("user_id", p["id"])
                      .order("created_at", desc=True).limit(30))).data or []
-
 
 @app.get("/api/fairness")
 async def fairness(user: dict = Depends(get_current_user)):
@@ -1954,7 +2375,6 @@ async def fairness(user: dict = Depends(get_current_user)):
                     "created_at": row["created_at"]})
     return out
 
-
 @app.post("/api/payments/deposit")
 async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0)); currency = (body.get("currency") or "USDT").upper()
@@ -1967,7 +2387,6 @@ async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
         log.exception("create_invoice failed"); raise HTTPException(400, str(e))
     return {"link": inv["link"], "invoice_id": inv.get("invoice_id")}
 
-
 @app.post("/api/payments/withdraw")
 async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0)); currency = (body.get("currency") or "USDT").upper()
@@ -1975,13 +2394,13 @@ async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
     if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "валюта не поддерживается")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "withdraw")
+    await check_wager_lock(p)
     if float(p["balance"]) < amount: raise HTTPException(400, "insufficient balance")
     try: payout = await do_withdraw(p, user["id"], amount, currency)
     except HTTPException: raise
     except Exception as e:
         log.exception("payout failed"); raise HTTPException(400, str(e))
     return {"ok": True, "payout_id": payout.get("id")}
-
 
 @app.post("/api/webhook/xrocket")
 async def xrocket_webhook(request: Request):
@@ -2010,8 +2429,7 @@ async def xrocket_webhook(request: Request):
                 log.info("deposit credited: %s", cid)
     return {"ok": True}
 
-
-# =================== CRASH API ===================
+# ================== CRASH API ==================
 def _crash_state_sync(p):
     status = crash_state["status"]; mult = 1.0
     if status == "running" and crash_state["started_at"]:
@@ -2042,14 +2460,12 @@ def _crash_state_sync(p):
             "recent": [{"crash_point": float(x["crash_point"])} for x in recent.data or []],
             "balance": float(p["balance"]), "round_id": rid}
 
-
 @app.get("/api/crash/state")
 async def crash_state_endpoint(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     try: return await asyncio.to_thread(_crash_state_sync, p)
     except Exception:
         log.exception("crash_state failed"); raise HTTPException(500, "crash state error")
-
 
 @app.post("/api/crash/bet")
 async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
@@ -2062,11 +2478,14 @@ async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet)
+    await check_bonus_game(p, "crash")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     rid = crash_state["round_id"]
     ex = await sb(supabase.table("crash_bets").select("id").eq("round_id", rid).eq("user_id", p["id"]))
     if ex.data: raise HTTPException(400, "уже поставил в этом раунде")
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     row = {"round_id": rid, "user_id": p["id"],
            "username": p.get("first_name") or p.get("username") or "anon",
            "amount": bet, "status": "active"}
@@ -2076,7 +2495,6 @@ async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
         "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
         "status": "completed", "meta": {"game": "crash_global", "auto": auto}}))
     return {"ok": True}
-
 
 @app.post("/api/crash/cashout")
 async def crash_cashout_global(user: dict = Depends(get_current_user)):
@@ -2101,27 +2519,7 @@ async def crash_cashout_global(user: dict = Depends(get_current_user)):
                     profit, crash_state["server_seed"] or "", 0)
     return {"ok": True, "mult": mult, "payout": payout, "profit": profit}
 
-
-def _roulette_bets_sync():
-    r = supabase.table("game_rounds").select("result, bet_amount, profit, profiles(username, first_name)") \
-        .eq("game_type", "roulette").order("created_at", desc=True).limit(25).execute()
-    out = []
-    for row in r.data or []:
-        pr = row.get("profiles") or {}
-        name = pr.get("first_name") or pr.get("username") or "anon"
-        res = row.get("result") or {}
-        out.append({"name": name, "number": res.get("n"), "bet_type": res.get("bet_type"),
-                    "win": bool(res.get("win", False)), "amount": float(row["bet_amount"]),
-                    "profit": float(row["profit"])})
-    return out
-
-
-@app.get("/api/roulette/bets")
-async def roulette_bets():
-    try: return await asyncio.to_thread(_roulette_bets_sync)
-    except Exception: return []
-
-
+# ================== GAME API ==================
 @app.post("/api/games/dice/bet")
 async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
     ensure_game_enabled("dice")
@@ -2131,10 +2529,12 @@ async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
     if not (1 <= chosen <= 6): raise HTTPException(400, "chosen 1..6")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet); await check_bonus_game(p, "dice")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     result = dice_result(ss, p["client_seed"], nonce)
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     win = (result == chosen); profit = -bet; payout = 0
     if win:
@@ -2149,7 +2549,6 @@ async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
                     profit, ss, nonce)
     return {"ok": True, "result": result, "win": win, "profit": profit, "payout": payout}
 
-
 @app.post("/api/games/plinko/drop")
 async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     ensure_game_enabled("plinko")
@@ -2159,11 +2558,13 @@ async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet); await check_bonus_game(p, "plinko")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     idx, path = plinko_path(ss, p["client_seed"], nonce, rows)
     mult = PLINKO_MULTS[rows][idx]
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     payout = round(bet * mult, 8); profit = round(payout - bet, 8)
     if profit > 0:
@@ -2178,19 +2579,16 @@ async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "slot": idx, "mult": mult, "payout": payout, "profit": profit,
             "rows": rows, "path": path}
 
-
 @app.get("/api/games/blackjack/state")
 async def bj_state(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "blackjack":
-        return {"active": False}
+    if not ar or ar["game_type"] != "blackjack": return {"active": False}
     st = ar["state"]
     return {"active": True, "player": st["player"], "dealer": [st["dealer"][0], "??"],
             "player_value": bj_value(st["player"]),
             "dealer_value": bj_value([st["dealer"][0]]),
             "finished": False, "bet": float(ar["bet_amount"])}
-
 
 @app.post("/api/games/blackjack/start")
 async def bj_start(body: dict, user: dict = Depends(get_current_user)):
@@ -2200,6 +2598,7 @@ async def bj_start(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet); await check_bonus_game(p, "blackjack")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ar = await get_active_round(p["id"])
     if ar:
@@ -2216,6 +2615,7 @@ async def bj_start(body: dict, user: dict = Depends(get_current_user)):
     player_v = bj_value(player)
     state = {"player": player, "dealer": dealer, "rest": rest, "bet": bet, "status": "player_turn"}
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     await sb(supabase.table("active_rounds").insert({
         "user_id": p["id"], "game_type": "blackjack", "bet_amount": bet,
@@ -2244,7 +2644,6 @@ async def bj_start(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "player": player, "dealer": [dealer[0], "??"],
             "player_value": player_v, "dealer_value": bj_value([dealer[0]]), "finished": False}
 
-
 @app.post("/api/games/blackjack/hit")
 async def bj_hit(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -2269,7 +2668,6 @@ async def bj_hit(user: dict = Depends(get_current_user)):
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
     return {"ok": True, "player": st["player"], "dealer": [st["dealer"][0], "??"],
             "player_value": pv, "dealer_value": bj_value([st["dealer"][0]]), "finished": False}
-
 
 @app.post("/api/games/blackjack/stand")
 async def bj_stand(user: dict = Depends(get_current_user)):
@@ -2304,7 +2702,6 @@ async def bj_stand(user: dict = Depends(get_current_user)):
             "finished": True, "win": win, "push": push,
             "profit": profit, "payout": payout}
 
-
 @app.get("/api/games/tower/state")
 async def tower_state(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -2317,7 +2714,6 @@ async def tower_state(user: dict = Depends(get_current_user)):
             "revealed": st.get("revealed", []),
             "mine_positions": st["mine_positions"]}
 
-
 @app.post("/api/games/tower/start")
 async def tower_start(body: dict, user: dict = Depends(get_current_user)):
     ensure_game_enabled("tower")
@@ -2326,6 +2722,7 @@ async def tower_start(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet); await check_bonus_game(p, "tower")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ar = await get_active_round(p["id"])
     if ar:
@@ -2339,6 +2736,7 @@ async def tower_start(body: dict, user: dict = Depends(get_current_user)):
     positions = tower_step_positions(ss, p["client_seed"], nonce, levels=6)
     state = {"level": 0, "mine_positions": positions, "bet": bet, "revealed": []}
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     await sb(supabase.table("active_rounds").insert({
         "user_id": p["id"], "game_type": "tower", "bet_amount": bet,
@@ -2347,7 +2745,6 @@ async def tower_start(body: dict, user: dict = Depends(get_current_user)):
         "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
         "status": "completed", "meta": {"game": "tower"}}))
     return {"ok": True, "level": 0, "mult": 1.0, "next_mult": tower_mult(1)}
-
 
 @app.post("/api/games/tower/step")
 async def tower_step(body: dict, user: dict = Depends(get_current_user)):
@@ -2376,7 +2773,6 @@ async def tower_step(body: dict, user: dict = Depends(get_current_user)):
             "mult": tower_mult(new_level), "next_mult": tower_mult(new_level + 1),
             "mine": mine, "all_levels": st["mine_positions"]}
 
-
 @app.post("/api/games/tower/cashout")
 async def tower_cashout(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -2398,7 +2794,6 @@ async def tower_cashout(user: dict = Depends(get_current_user)):
     return {"ok": True, "level": level, "mult": mult, "payout": payout, "profit": profit,
             "mine_positions": st["mine_positions"]}
 
-
 @app.post("/api/games/mines/start")
 async def mines_start(body: dict, user: dict = Depends(get_current_user)):
     ensure_game_enabled("mines")
@@ -2408,11 +2803,13 @@ async def mines_start(body: dict, user: dict = Depends(get_current_user)):
     if not (1 <= mines <= 24): raise HTTPException(400, "mines 1..24")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet); await check_bonus_game(p, "mines")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     if await get_active_round(p["id"]): raise HTTPException(400, "active round exists")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     positions = mine_positions(ss, p["client_seed"], nonce, mines)
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     await sb(supabase.table("active_rounds").insert({
         "user_id": p["id"], "game_type": "mines", "bet_amount": bet,
@@ -2422,7 +2819,6 @@ async def mines_start(body: dict, user: dict = Depends(get_current_user)):
         "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
         "status": "completed", "meta": {"game": "mines"}}))
     return {"ok": True, "mines": mines, "mult": mines_mult(mines, 0)}
-
 
 @app.post("/api/games/mines/reveal")
 async def mines_reveal(body: dict, user: dict = Depends(get_current_user)):
@@ -2446,7 +2842,6 @@ async def mines_reveal(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "lost": False, "revealed": st["revealed"],
             "mult": mines_mult(st["mines"], len(st["revealed"]))}
 
-
 @app.post("/api/games/mines/cashout")
 async def mines_cashout(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
@@ -2466,10 +2861,8 @@ async def mines_cashout(user: dict = Depends(get_current_user)):
     await clear_active_round(p["id"])
     return {"ok": True, "mult": mult, "payout": payout, "profit": profit, "positions": st["positions"]}
 
-
 RED = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
-
 
 @app.post("/api/games/roulette/bet")
 async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
@@ -2479,10 +2872,12 @@ async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
+    await check_bonus_max_bet(p, bet); await check_bonus_game(p, "roulette")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     n = roulette_number(ss, p["client_seed"], nonce)
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     win = False; pm = 0.0
     if bt == "red" and n in RED: win, pm = True, ROUL_RB_PAYOUT
