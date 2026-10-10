@@ -651,6 +651,7 @@ let cfg = {
   games_enabled: {}, daily_bonus: 0, bonus_cooldown_h: 24,
   wager_reset_threshold: 0.1,
   vip_tiers: [],
+  scratch_tiers: [],
   payouts: { dice: 5.76, roulette_rb: 1.92, roulette_dozen: 2.88, roulette_number: 34.56, plinko: {} },
 };
 let currentGame = null;
@@ -788,13 +789,11 @@ function renderProfile() {
     pill.style.borderColor = "";
   }
 
-  // сигнатура для renderGames (бонусные ограничения)
   const sig = `${bonus.bonus_active}|${(bonus.bonus_allowed_games||[]).join(",")}`;
   const bonusChanged = sig !== _lastBonusSig;
   _lastBonusSig = sig;
 
   const vsig = `${vip.tier}|${vip.total_wagered}`;
-  const vipChanged = vsig !== _lastVipSig;
   _lastVipSig = vsig;
 
   if (bonusChanged && typeof renderGames === "function") renderGames();
@@ -984,7 +983,7 @@ const RULES = {
   tower: `<b>🗼 Tower</b><br>6 уровней по 3 двери. Одна мина. ×1.44 за уровень.<br><b>RTP:</b> 96%`,
   keno: `<b>🎯 Keno</b><br>Выбери 1-10 чисел из 80. Рисуется 20. Чем больше угадал — тем выше выплата.<br><b>RTP:</b> ~95%`,
   hilo: `<b>🃏 Hi-Lo</b><br>Угадай — следующая карта больше или меньше. Множитель растёт с каждым шагом.<br><b>RTP:</b> ~96%`,
-  scratch: `<b>🎟 Scratch</b><br>Открой 3 ячейки. Если 3 одинаковых символа — выигрыш.<br><b>RTP:</b> ~94%`,
+  scratch: `<b>🎟 Scratch</b><br>6 билетов с разной ставкой. Сотри 9 ячеек пальцем. Три одинаковых символа = приз.<br><b>RTP:</b> ~94%`,
 };
 
 function openRules(game) {
@@ -2347,56 +2346,348 @@ function renderHilo() {
   })();
 }
 
-/* ==================== SCRATCH ==================== */
+/* ==================== SCRATCH (9-cell drag) ==================== */
 function renderScratch() {
   const body = document.getElementById("game-body");
+
+  const tickets = [
+    { id:"mat",      name:"Мать",      bet:0.20,  color:"#10b981", max:14 },
+    { id:"lazur",    name:"Лазурь",    bet:0.50,  color:"#3b82f6", max:50 },
+    { id:"violet",   name:"Виолет",    bet:1.00,  color:"#a855f7", max:60 },
+    { id:"sunset",   name:"Закат",     bet:2.00,  color:"#f97316", max:200 },
+    { id:"gold",     name:"Золото",    bet:5.00,  color:"#fbbf24", max:300 },
+    { id:"obsidian", name:"Обисидиан", bet:10.00, color:"#e5e7eb", max:1000 },
+  ];
+
+  let selectedIdx = 0;
+  let playing = false;
+  let currentCells = null;
+  let currentMult = 0;
+  let revealed = false;
+
+  const ticket = () => tickets[selectedIdx];
+
   body.innerHTML = `
     <div class="flex flex-col gap-3">
-      <div class="rounded-2xl p-3" style="background:var(--surface); border:1px solid var(--border);">
-        <div id="scratch-grid" class="grid grid-cols-3 gap-2"></div>
-      </div>
-      <div class="text-xs text-center" style="color:var(--muted);">3 одинаковых = выигрыш!</div>
-      ${betInputRow("scratch-bet", 0.5)}
-      <button id="scratch-play" class="submit">Стереть</button>
+      <div class="text-xs font-bold tracking-wider" style="color:var(--accent);">ВЫБЕРИТЕ БИЛЕТ</div>
+      <div id="scratch-tickets" class="grid grid-cols-2 gap-2"></div>
+      <div id="scratch-card" class="rounded-2xl p-3"
+           style="background:linear-gradient(135deg,#0f3b2e,#0a261e); border:1px solid rgba(16,185,129,.3);"></div>
       <div id="scratch-result" class="text-center text-sm"></div>
     </div>`;
-  const grid = body.querySelector("#scratch-grid");
-  let revealed = false; let syms = ["❔", "❔", "❔"];
-  const render = () => {
-    grid.innerHTML = syms.map(s => `
-      <button class="aspect-square rounded-lg flex items-center justify-center text-4xl"
-              style="background:${revealed ? "var(--surface-2)" : "linear-gradient(135deg,#2a2f3c,#1a1f28)"};
-                     border:1px solid var(--border-hi);">
-        ${revealed ? s : "❔"}
-      </button>`).join("");
-  };
-  render();
-  const betEl = () => body.querySelector("#scratch-bet");
-  wireBet(body, betEl);
-  body.querySelector("#scratch-play").onclick = async () => {
-    const bet = Number(betEl().value);
-    if (!validateBet(bet)) return;
+
+  function renderTickets() {
+    const wrap = document.getElementById("scratch-tickets");
+    wrap.innerHTML = tickets.map((t, i) => {
+      const sel = i === selectedIdx;
+      const bal = num(profile && profile.balance);
+      const affordable = bal >= t.bet;
+      return `
+        <button class="scratch-ticket row-item" data-i="${i}"
+                style="padding:10px 12px; cursor:pointer; text-align:left;
+                       ${sel ? 'border-color:'+t.color+'; background:rgba(255,255,255,.03);' : ''}
+                       ${!affordable && !sel ? 'opacity:.45;' : ''}">
+          <div style="width:3px; height:28px; background:${t.color}; border-radius:2px; margin-right:8px;"></div>
+          <div class="flex-1">
+            <div class="text-sm font-bold">${t.name}</div>
+            <div class="text-xs" style="color:var(--muted);">${t.bet.toFixed(2)} ₮</div>
+          </div>
+          <div class="text-xs font-black" style="color:${t.color};">до ×${t.max}</div>
+        </button>`;
+    }).join("");
+    wrap.querySelectorAll(".scratch-ticket").forEach(b => b.onclick = () => {
+      if (playing) return;
+      selectedIdx = Number(b.dataset.i);
+      haptic();
+      renderTickets();
+      renderCardPreview();
+    });
+  }
+
+  function renderCardPreview() {
+    const t = ticket();
+    const card = document.getElementById("scratch-card");
+    card.innerHTML = `
+      <div class="flex justify-between items-center mb-3">
+        <div>
+          <div class="text-xs font-black" style="color:var(--green);">RAIKA</div>
+          <div class="text-xs font-bold" style="color:var(--muted);">СОБЕРИТЕ 3 одинаковых приза</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[10px]" style="color:var(--muted);">МАКС. ПРИЗ</div>
+          <div class="text-lg font-black" style="color:${t.color};">×${t.max}</div>
+        </div>
+      </div>
+      <div style="position:relative; border-radius:12px; overflow:hidden; aspect-ratio:1;">
+        <div style="position:absolute; inset:0; display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+             padding:12px; background:linear-gradient(135deg,#14301f,#0c1e13);">
+          ${Array.from({length:9}).map(() => `
+            <div style="background:rgba(0,0,0,.3); border-radius:8px; border:1px solid rgba(255,255,255,.05);"></div>
+          `).join("")}
+        </div>
+        <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+             background:rgba(0,0,0,.35); backdrop-filter:blur(2px);">
+          <div class="text-center">
+            <div class="text-3xl mb-2">🎟</div>
+            <div class="text-xs font-bold" style="color:var(--muted);">Нажми «Купить билет»</div>
+          </div>
+        </div>
+      </div>
+      <button id="scratch-play" class="submit mt-3"
+              style="background:${t.color}; color:#031b12; font-weight:900;">
+        Купить билет · ${t.bet.toFixed(2)} ₮
+      </button>`;
+    document.getElementById("scratch-play").onclick = onPlay;
+  }
+
+  async function onPlay() {
+    if (playing) return;
+    const t = ticket();
+    if (num(profile.balance) < t.bet) return toast("Недостаточно средств");
+    playing = true;
     haptic("medium");
-    const btn = body.querySelector("#scratch-play");
+    const btn = document.getElementById("scratch-play");
     btn.disabled = true;
-    body.querySelector("#scratch-result").innerHTML = "";
+    btn.innerText = "Покупка…";
+    document.getElementById("scratch-result").innerHTML = "";
+
     try {
-      const r = await api("/api/games/scratch/play", {method:"POST", body:JSON.stringify({bet})});
-      syms = r.cells; revealed = false; render();
-      await new Promise(res => setTimeout(res, 300));
-      revealed = true; render();
-      haptic("light");
-      const res = body.querySelector("#scratch-result");
-      if (r.profit > 0) {
-        res.innerHTML = `<span style="color:var(--green); font-weight:700;">×${r.mult} · +${num(r.profit).toFixed(2)}</span>`;
-        updateBalance(num(profile.balance) + num(r.payout));
-      } else {
-        res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${bet.toFixed(2)}</span>`;
-        updateBalance(num(profile.balance));
+      const r = await api("/api/games/scratch/play", {
+        method: "POST",
+        body: JSON.stringify({ ticket: t.id }),
+      });
+      currentCells = r.cells;
+      currentMult = r.mult;
+      revealed = false;
+      updateBalance(num(profile.balance) - t.bet);
+      renderScratchBoard();
+    } catch (e) {
+      playing = false;
+      toast(e.message);
+      const b2 = document.getElementById("scratch-play");
+      if (b2) { b2.disabled = false; b2.innerText = `Купить билет · ${t.bet.toFixed(2)} ₮`; }
+    }
+  }
+
+  function renderScratchBoard() {
+    const t = ticket();
+    const card = document.getElementById("scratch-card");
+    card.innerHTML = `
+      <div class="flex justify-between items-center mb-3">
+        <div>
+          <div class="text-xs font-black" style="color:var(--green);">RAIKA</div>
+          <div class="text-xs font-bold" style="color:var(--muted);">СОБЕРИТЕ 3 одинаковых приза</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[10px]" style="color:var(--muted);">МАКС. ПРИЗ</div>
+          <div class="text-lg font-black" style="color:${t.color};">×${t.max}</div>
+        </div>
+      </div>
+      <div id="scratch-board" style="position:relative; border-radius:12px; overflow:hidden; aspect-ratio:1;">
+        <div id="scratch-grid"
+             style="position:absolute; inset:0; display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+                    padding:12px; background:linear-gradient(135deg,#14301f,#0c1e13);">
+          ${Array.from({length:9}).map((_, i) => `
+            <div class="scratch-cell" data-i="${i}"
+                 style="background:rgba(0,0,0,.3); border-radius:8px;
+                        border:1px solid rgba(255,255,255,.05);
+                        display:flex; align-items:center; justify-content:center;
+                        font-size:clamp(28px,8vw,48px); line-height:1;"></div>
+          `).join("")}
+        </div>
+        <canvas id="scratch-canvas"
+                style="position:absolute; inset:0; width:100%; height:100%;
+                       cursor:crosshair; touch-action:none; user-select:none;"></canvas>
+      </div>
+      <div class="text-center text-[10px] mt-2" style="color:rgba(255,255,255,.4);">
+        СТИРАЙТЕ ПАЛЬЦЕМ ИЛИ КУРСОРОМ
+      </div>`;
+    setupCanvas();
+  }
+
+  function setupCanvas() {
+    const canvas = document.getElementById("scratch-canvas");
+    const board  = document.getElementById("scratch-board");
+    if (!canvas || !board) return;
+
+    requestAnimationFrame(() => {
+      const rect = board.getBoundingClientRect();
+      const W = rect.width, H = rect.height;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      canvas.width  = Math.floor(W * dpr);
+      canvas.height = Math.floor(H * dpr);
+      const ctx = canvas.getContext("2d");
+      ctx.scale(dpr, dpr);
+
+      const grad = ctx.createLinearGradient(0, 0, W, H);
+      grad.addColorStop(0,    "#c8cdd4");
+      grad.addColorStop(0.35, "#e8ebef");
+      grad.addColorStop(0.65, "#b8bdc4");
+      grad.addColorStop(1,    "#d8dde3");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+
+      for (let i = 0; i < 500; i++) {
+        ctx.fillStyle = `rgba(255,255,255,${Math.random()*0.3})`;
+        ctx.fillRect(Math.random()*W, Math.random()*H, 1, 1);
       }
-    } catch (e) { toast(e.message); }
-    finally { btn.disabled = false; }
-  };
+      for (let i = 0; i < 150; i++) {
+        ctx.fillStyle = `rgba(0,0,0,${Math.random()*0.06})`;
+        ctx.fillRect(Math.random()*W, Math.random()*H, 2, 2);
+      }
+
+      ctx.fillStyle = "rgba(80,85,95,.75)";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "900 " + Math.floor(W * 0.11) + "px -apple-system, sans-serif";
+      ctx.fillText("СТИРАЙТЕ", W/2, H/2 - Math.floor(W*0.04));
+      ctx.fillStyle = "rgba(80,85,95,.55)";
+      ctx.font = "700 " + Math.floor(W * 0.036) + "px -apple-system, sans-serif";
+      ctx.fillText("ПАЛЬЦЕМ ИЛИ КУРСОРОМ", W/2, H/2 + Math.floor(W*0.07));
+
+      ctx.fillStyle = "rgba(120,125,135,.35)";
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.arc(W*0.5, H*0.88, 3 + i, 0, Math.PI*2);
+        ctx.fill();
+      }
+
+      let drawing = false, lastX = 0, lastY = 0;
+      const R = Math.max(18, W * 0.085);
+
+      function getPos(e) {
+        const r = canvas.getBoundingClientRect();
+        const px = e.touches ? e.touches[0].clientX : e.clientX;
+        const py = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: px - r.left, y: py - r.top };
+      }
+
+      function erase(x, y) {
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.beginPath();
+        ctx.arc(x, y, R, 0, Math.PI*2);
+        ctx.fill();
+        if (lastX || lastY) {
+          ctx.lineWidth = R * 1.7;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(lastX, lastY);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+        }
+        lastX = x; lastY = y;
+      }
+
+      let lastCheck = 0;
+      function checkProgress() {
+        const now = Date.now();
+        if (now - lastCheck < 180) return;
+        lastCheck = now;
+        try {
+          const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          let transparent = 0, total = 0;
+          for (let i = 3; i < data.length; i += 64) {
+            total++;
+            if (data[i] < 50) transparent++;
+          }
+          if (total > 0 && transparent / total > 0.5) revealBoard();
+        } catch (_) {}
+      }
+
+      const start = (e) => {
+        if (revealed || !currentCells) return;
+        e.preventDefault();
+        drawing = true;
+        lastX = 0; lastY = 0;
+        const { x, y } = getPos(e);
+        erase(x, y);
+      };
+      const move = (e) => {
+        if (!drawing) return;
+        e.preventDefault();
+        const { x, y } = getPos(e);
+        erase(x, y);
+        checkProgress();
+      };
+      const end = () => {
+        if (!drawing) return;
+        drawing = false;
+        lastX = 0; lastY = 0;
+        checkProgress();
+      };
+
+      canvas.addEventListener("mousedown", start);
+      canvas.addEventListener("mousemove", move);
+      canvas.addEventListener("mouseup", end);
+      canvas.addEventListener("mouseleave", end);
+      canvas.addEventListener("touchstart", start, { passive: false });
+      canvas.addEventListener("touchmove", move, { passive: false });
+      canvas.addEventListener("touchend", end);
+      canvas.addEventListener("touchcancel", end);
+    });
+  }
+
+  function revealBoard() {
+    if (revealed || !currentCells) return;
+    revealed = true;
+
+    const canvas = document.getElementById("scratch-canvas");
+    if (canvas) {
+      canvas.style.transition = "opacity .35s ease";
+      canvas.style.opacity = "0";
+      setTimeout(() => { canvas.style.display = "none"; }, 400);
+    }
+
+    let winSym = null;
+    if (currentMult > 0) {
+      const counts = {};
+      currentCells.forEach(c => counts[c] = (counts[c] || 0) + 1);
+      for (const [s, c] of Object.entries(counts)) {
+        if (c >= 3) { winSym = s; break; }
+      }
+    }
+
+    const cells = document.querySelectorAll(".scratch-cell");
+    cells.forEach((el, i) => {
+      const sym = currentCells[i];
+      const isWin = winSym && sym === winSym;
+      el.innerText = sym;
+      el.style.background = isWin ? "rgba(16,185,129,.28)" : "rgba(255,255,255,.06)";
+      el.style.border = isWin ? "2px solid var(--green)" : "1px solid rgba(255,255,255,.08)";
+      el.style.boxShadow = isWin ? "0 0 16px rgba(16,185,129,.35)" : "none";
+      el.style.animation = "cardIn .35s ease both";
+      el.style.animationDelay = (i * 55) + "ms";
+    });
+
+    const res = document.getElementById("scratch-result");
+    const t = ticket();
+    if (currentMult > 0) {
+      const payout = t.bet * currentMult;
+      const profit = payout - t.bet;
+      res.innerHTML = `<div style="color:var(--green); font-weight:900; font-size:22px; padding:6px 0;">
+        🎉 ×${currentMult} · +${profit.toFixed(2)} ₮
+      </div>`;
+      updateBalance(num(profile.balance) + payout);
+      haptic("heavy");
+    } else {
+      res.innerHTML = `<div style="color:var(--red); font-weight:700; font-size:16px; padding:6px 0;">
+        −${t.bet.toFixed(2)} ₮
+      </div>`;
+      updateBalance(num(profile.balance));
+    }
+
+    setTimeout(() => {
+      playing = false;
+      currentCells = null;
+      currentMult = 0;
+      revealed = false;
+      renderCardPreview();
+    }, 2200);
+  }
+
+  renderTickets();
+  renderCardPreview();
 }
 
 /* ==================== POLLING ==================== */
