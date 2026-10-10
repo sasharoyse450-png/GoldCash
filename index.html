@@ -50,9 +50,6 @@
     transform: scale(.96);
   }
 
-  /* ============================================================
-     LAYOUT — центрированная колонка 480px на всех разрешениях
-     ============================================================ */
   .app-col { width: 100%; max-width: var(--app-max); margin-left: auto; margin-right: auto; }
   .app-fixed-top {
     position: fixed; top: 0; left: 50%; transform: translateX(-50%);
@@ -77,9 +74,6 @@
     }
   }
 
-  /* ============================================================
-     TOP BAR / NAV
-     ============================================================ */
   .brand { font-weight: 900; letter-spacing: -.04em; font-size: 20px; }
   .brand .dot { color: var(--accent); }
 
@@ -97,7 +91,6 @@
     border: none; cursor: pointer;
   }
   .btn-accent:hover { background: #fcd34d; }
-  .btn-accent:active { background: var(--accent-dk); }
   .btn-ghost {
     background: var(--surface); color: var(--text);
     border: 1px solid var(--border-hi);
@@ -113,6 +106,11 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 800;
   }
+  #vip-badge {
+    padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 800;
+    white-space: nowrap;
+  }
+  #btn-bonus.locked { opacity: .55; }
 
   .section-title {
     font-size: 13px; font-weight: 800;
@@ -141,110 +139,72 @@
     background: rgba(251,191,36,.1); border-radius: 6px;
   }
 
-  /* ============================================================
-     GAME CARDS — картинка 16:9 + fallback текст
-     ============================================================ */
   .game-card {
-    position: relative;
-    display: block;
-    width: 100%;
-    border-radius: 14px;
-    overflow: hidden;
-    background: #10141c;
-    border: 1px solid var(--border);
-    text-align: left;
-    cursor: pointer;
+    position: relative; display: block; width: 100%;
+    border-radius: 14px; overflow: hidden;
+    background: #10141c; border: 1px solid var(--border);
+    text-align: left; cursor: pointer;
   }
   .game-card:hover { border-color: var(--border-hi); }
   .game-card:active { transform: scale(.985); }
+  .game-card[data-bonus-blocked="1"] { opacity: .55; }
 
   .game-hero {
-    position: relative;
-    aspect-ratio: 16 / 9;
+    position: relative; aspect-ratio: 16 / 9;
     overflow: hidden;
     background: linear-gradient(135deg, #171b24 0%, #0d1017 100%);
   }
   .game-hero-bg {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    font-size: 96px;
-    font-weight: 900;
-    letter-spacing: -.06em;
-    color: rgba(255,255,255,.08);
-    line-height: .8;
-    user-select: none;
-    pointer-events: none;
-    white-space: nowrap;
-    z-index: 0;
+    font-size: 96px; font-weight: 900; letter-spacing: -.06em;
+    color: rgba(255,255,255,.08); line-height: .8;
+    user-select: none; pointer-events: none;
+    white-space: nowrap; z-index: 0;
   }
-  .game-hero-bg.two-lines { font-size: 68px; letter-spacing: -.08em; }
-
   .game-hero-img {
     position: absolute; inset: 0;
     width: 100%; height: 100%;
-    object-fit: cover;
-    display: block;
-    z-index: 1;
+    object-fit: cover; display: block; z-index: 1;
     background: #0d1017;
   }
-
   .game-hero-shade {
     position: absolute; inset: 0;
     background: linear-gradient(180deg,
                 rgba(10,13,18,.05) 0%,
                 rgba(10,13,18,.30) 55%,
                 rgba(10,13,18,.85) 100%);
-    pointer-events: none;
-    z-index: 2;
+    pointer-events: none; z-index: 2;
   }
-
   .game-rtp {
     position: absolute; top: 10px; left: 10px;
     font-size: 10px; font-weight: 800; letter-spacing: .06em;
-    color: var(--green);
-    background: rgba(10,13,18,.75);
+    color: var(--green); background: rgba(10,13,18,.75);
     padding: 4px 8px; border-radius: 5px;
-    text-transform: uppercase;
-    z-index: 3;
+    text-transform: uppercase; z-index: 3;
     border: 1px solid rgba(16,185,129,.2);
     backdrop-filter: blur(6px);
   }
-
   .game-off {
     position: absolute; top: 10px; right: 10px;
     font-size: 10px; font-weight: 800; letter-spacing: .06em;
-    color: var(--red);
-    background: rgba(10,13,18,.85);
+    color: var(--red); background: rgba(10,13,18,.85);
     padding: 4px 8px; border-radius: 5px;
-    text-transform: uppercase;
-    z-index: 3;
+    text-transform: uppercase; z-index: 3;
     border: 1px solid rgba(239,68,68,.3);
   }
-
   .game-overlay {
-    position: relative;
-    padding: 12px 14px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    background: #10141c;
-    border-top: 1px solid var(--border);
-    z-index: 1;
+    position: relative; padding: 12px 14px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; background: #10141c;
+    border-top: 1px solid var(--border); z-index: 1;
   }
-  .game-name {
-    font-size: 18px; font-weight: 900;
-    letter-spacing: -.03em;
-    color: #fff;
-  }
+  .game-name { font-size: 18px; font-weight: 900; letter-spacing: -.03em; color: #fff; }
   .game-play {
-    background: #1f2532;
-    color: #fff;
+    background: #1f2532; color: #fff;
     border: 1px solid var(--border-hi);
-    border-radius: 8px;
-    padding: 6px 14px;
-    font-size: 12px; font-weight: 800;
-    white-space: nowrap;
+    border-radius: 8px; padding: 6px 14px;
+    font-size: 12px; font-weight: 800; white-space: nowrap;
   }
 
   .nav { background: var(--bg); border-top: 1px solid var(--border); }
@@ -256,15 +216,11 @@
   .nav-btn.active { color: var(--accent); }
   .nav-btn svg { width: 20px; height: 20px; }
 
-  /* ============================================================
-     МОДАЛКИ
-     ============================================================ */
   .modal {
     position: fixed; inset: 0; display: flex;
     background: rgba(0,0,0,.75);
     align-items: flex-end; justify-content: center;
-    z-index: 100;
-    opacity: 0; pointer-events: none;
+    z-index: 100; opacity: 0; pointer-events: none;
     transition: opacity .22s cubic-bezier(.22, .61, .36, 1);
   }
   .modal.open { opacity: 1; pointer-events: auto; }
@@ -276,9 +232,7 @@
     padding: 20px 20px 28px;
     transform: translateY(100%);
     transition: transform .3s cubic-bezier(.22, .61, .36, 1);
-    will-change: transform;
-    max-height: 90vh;
-    overflow-y: auto;
+    will-change: transform; max-height: 90vh; overflow-y: auto;
   }
   .modal.open .modal-box { transform: translateY(0); }
 
@@ -286,12 +240,9 @@
   .modal-close { color: var(--muted); font-size: 22px; line-height: 1; font-weight: 300; padding: 4px; }
 
   #modal-game {
-    position: fixed;
-    top: 0; bottom: 0;
-    left: 50%;
+    position: fixed; top: 0; bottom: 0; left: 50%;
     transform: translateX(-50%) translateY(20px);
-    width: 100%;
-    max-width: var(--app-max);
+    width: 100%; max-width: var(--app-max);
     display: flex; flex-direction: column;
     background: var(--bg); z-index: 200;
     opacity: 0; pointer-events: none;
@@ -304,8 +255,7 @@
   .inp {
     width: 100%; background: var(--surface-2);
     border: 1px solid var(--border-hi);
-    border-radius: 10px;
-    padding: 12px 14px; font-size: 16px; color: var(--text);
+    border-radius: 10px; padding: 12px 14px; font-size: 16px; color: var(--text);
     outline: none;
   }
   .inp:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(251,191,36,.1); }
@@ -316,8 +266,7 @@
     flex: 1; background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 0; font-size: 12px; font-weight: 700;
-    color: var(--text);
-    cursor: pointer;
+    color: var(--text); cursor: pointer;
   }
   .quick-btn:hover { border-color: var(--border-hi); }
   .quick-btn.selected { border-color: var(--accent); color: var(--accent); background: rgba(251,191,36,.08); }
@@ -326,8 +275,7 @@
     width: 100%; background: var(--accent); color: #0a0d12;
     border: none; border-radius: 12px;
     padding: 14px; font-size: 15px; font-weight: 900;
-    letter-spacing: -.01em;
-    cursor: pointer;
+    letter-spacing: -.01em; cursor: pointer;
     box-shadow: 0 4px 14px rgba(251,191,36,.15);
   }
   .submit:hover { background: #fcd34d; box-shadow: 0 6px 20px rgba(251,191,36,.25); }
@@ -347,10 +295,8 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 54px; height: 76px;
     background: #f4f5f7; color: #0a0d12;
-    border-radius: 6px;
-    font-weight: 900; font-size: 18px;
-    margin: 0 3px;
-    border: 1px solid rgba(0,0,0,.15);
+    border-radius: 6px; font-weight: 900; font-size: 18px;
+    margin: 0 3px; border: 1px solid rgba(0,0,0,.15);
     box-shadow: 0 1px 3px rgba(0,0,0,.3);
     animation: cardIn .3s cubic-bezier(.34, 1.56, .64, 1) both;
   }
@@ -465,14 +411,17 @@
 <body>
 
 <header class="app-fixed-top topbar">
-  <div class="flex items-center justify-between px-4 py-3">
+  <div class="flex items-center justify-between px-3 py-3">
     <div class="brand">Gold<span class="dot">Cash</span></div>
     <div class="flex items-center gap-2">
       <div id="balance-pill" class="balance-pill">
         <span class="coin">₮</span>
         <span id="balance">0.00</span>
       </div>
-      <button id="btn-deposit" class="btn-accent">Пополнить</button>
+      <button id="btn-deposit" class="btn-accent" style="padding:6px 10px;">+</button>
+      <button id="btn-bonus" class="btn-ghost hidden" title="Бонус" style="padding:6px 8px;">🎁</button>
+      <div id="vip-badge" class="hidden" style="background:var(--muted);"></div>
+      <button id="btn-admin" class="btn-ghost hidden" title="Админ" style="padding:6px 8px;">🛠</button>
       <div id="avatar" class="avatar">?</div>
     </div>
   </div>
@@ -650,6 +599,20 @@
   </div>
 </div>
 
+<div id="modal-sub" class="modal">
+  <div class="modal-box">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="modal-title">Требуется подписка</h3>
+      <button class="close-modal modal-close">×</button>
+    </div>
+    <div class="text-sm mb-4" style="color:var(--muted);">
+      Чтобы пользоваться ботом, подпишись на наш канал. После подписки нажми «Проверить».
+    </div>
+    <a id="sub-link" href="#" target="_blank" class="submit" style="text-decoration:none; display:block; text-align:center;">📢 Подписаться на канал</a>
+    <button id="sub-check" class="btn-ghost w-full mt-2" style="padding:14px; width:100%;">✅ Я подписался — проверить</button>
+  </div>
+</div>
+
 <div id="modal-game">
   <div class="flex items-center justify-between p-3" style="border-bottom:1px solid var(--border);">
     <h3 id="game-title" style="font-size:15px; font-weight:800; letter-spacing:-.02em;">Игра</h3>
@@ -685,16 +648,22 @@ let cfg = {
   withdraw_cooldown_min: 15, max_withdraw_daily: 500,
   referral_share: 0.05, rtp: 0.96,
   currencies: ["USDT","TON","BTC","ETH","TRX"],
-  games_enabled: {},
+  games_enabled: {}, daily_bonus: 0, bonus_cooldown_h: 24,
+  wager_reset_threshold: 0.1,
+  vip_tiers: [],
   payouts: { dice: 5.76, roulette_rb: 1.92, roulette_dozen: 2.88, roulette_number: 34.56, plinko: {} },
 };
 let currentGame = null;
 let crashPoll = null, crashLocalAnim = null, crashAnimRoundId = null;
 let _displayedBalance = 0;
+let _lastBonusSig = "";
+let _lastVipSig = "";
 
 const RED_NUMS = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 const ROUL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
 const DICE_EMOJI = ["","⚀","⚁","⚂","⚃","⚄","⚅"];
+const HILO_NAMES = {2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A"};
+const VIP_COLORS = { bronze: "#cd7f32", silver: "#c0c0c0", gold: "#fbbf24", platinum: "#e5e7eb", diamond: "#a78bfa" };
 
 function toast(msg, ms=2200) {
   const t = document.getElementById("toast");
@@ -710,18 +679,49 @@ function toast(msg, ms=2200) {
 }
 function haptic(t="light") { try { tg.HapticFeedback.impactOccurred(t); } catch {} }
 function num(v){ const x = Number(v); return isFinite(x) ? x : 0; }
+
 async function api(path, opts={}) {
+  const initData = tg.initData || (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || "";
+  if (!initData) {
+    toast("Открой игру через Telegram", 4000);
+    throw new Error("no_init_data");
+  }
   const res = await fetch(`${API_URL}${path}`, {
-    ...opts, headers: {"Content-Type":"application/json",
-      "X-Telegram-Init-Data": tg.initData, ...(opts.headers||{})},
+    ...opts,
+    headers: {
+      "Content-Type":"application/json",
+      "X-Telegram-Init-Data": initData,
+      "X-Device-Id": (function(){
+        try {
+          let d = localStorage.getItem("gc_dev");
+          if (!d) { d = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("gc_dev", d); }
+          return d;
+        } catch { return ""; }
+      })(),
+      ...(opts.headers||{})
+    },
   });
   const data = await res.json().catch(()=>({}));
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const detail = typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`;
+    if (res.status === 403 && detail.toLowerCase().includes("subscription")) showSubscriptionModal();
+    if (res.status === 401) toast("Сессия истекла, переоткрой", 4000);
+    throw new Error(detail);
+  }
   return data;
 }
+
+function showSubscriptionModal() {
+  const url = (cfg && cfg.channel_url) || "";
+  const link = document.getElementById("sub-link");
+  if (link && url) link.href = url;
+  else if (link) link.style.display = "none";
+  openModal("modal-sub");
+}
+
 function openModal(id){ const m=document.getElementById(id); if (m) m.classList.add("open"); }
 function closeModal(id){
-  const m=document.getElementById(id);
+  const m = document.getElementById(id);
   if (m) m.classList.remove("open");
   if (id === "modal-game") {
     if (crashPoll) { clearInterval(crashPoll); crashPoll = null; }
@@ -744,7 +744,8 @@ async function init() {
     _displayedBalance = num(profile.balance);
     renderProfile();
     updateWithdrawNote();
-  } catch (e) { toast("Ошибка авторизации: " + e.message); }
+    loadBonusStatus();
+  } catch (e) { toast("Ошибка: " + e.message); }
   renderGames();
 }
 
@@ -760,7 +761,45 @@ function renderProfile() {
   const wc = document.getElementById("withdraw-currency");
   if (dc) dc.value = cur;
   if (wc) wc.value = cur;
+
+  // VIP badge
+  const vb = document.getElementById("vip-badge");
+  const vip = (profile && profile.vip) || {};
+  if (vb) {
+    if (vip.tier && vip.tier !== "bronze") {
+      vb.classList.remove("hidden");
+      vb.style.background = VIP_COLORS[vip.tier] || "var(--muted)";
+      vb.style.color = "#0a0d12";
+      vb.innerText = (vip.tier_name || vip.tier).split(" ")[0];
+    } else vb.classList.add("hidden");
+  }
+  // Admin button
+  const ab = document.getElementById("btn-admin");
+  if (ab) ab.classList.toggle("hidden", !profile?.is_admin);
+
+  // bonus bar color on pill
+  const pill = document.getElementById("balance-pill");
+  const bonus = (profile && profile.bonus) || {};
+  if (bonus.bonus_active) {
+    pill.title = `🎰 Бонус: ${bonus.wager_progress.toFixed(2)}/${bonus.wager_required.toFixed(2)} ₮`;
+    pill.style.borderColor = "rgba(251,191,36,.5)";
+  } else {
+    pill.title = "";
+    pill.style.borderColor = "";
+  }
+
+  // сигнатура для renderGames (бонусные ограничения)
+  const sig = `${bonus.bonus_active}|${(bonus.bonus_allowed_games||[]).join(",")}`;
+  const bonusChanged = sig !== _lastBonusSig;
+  _lastBonusSig = sig;
+
+  const vsig = `${vip.tier}|${vip.total_wagered}`;
+  const vipChanged = vsig !== _lastVipSig;
+  _lastVipSig = vsig;
+
+  if (bonusChanged && typeof renderGames === "function") renderGames();
 }
+
 function updateBalance(v, animate = true) {
   const old = num(profile?.balance);
   profile.balance = num(v);
@@ -773,11 +812,7 @@ function updateBalance(v, animate = true) {
     el.classList.remove("bal-flash-up","bal-flash-down");
     void el.offsetWidth; el.classList.add(cls);
     setTimeout(()=>el.classList.remove(cls), 500);
-    if (gb) {
-      gb.classList.remove("bal-flash-up","bal-flash-down");
-      void gb.offsetWidth; gb.classList.add(cls);
-      setTimeout(()=>gb.classList.remove(cls), 500);
-    }
+    if (gb) { gb.classList.remove("bal-flash-up","bal-flash-down"); void gb.offsetWidth; gb.classList.add(cls); setTimeout(()=>gb.classList.remove(cls), 500); }
     pill.classList.add("pop"); setTimeout(()=>pill.classList.remove("pop"), 250);
   }
   const start = _displayedBalance;
@@ -799,9 +834,16 @@ function updateBalance(v, animate = true) {
   }
   requestAnimationFrame(tick);
 }
+
 function updateWithdrawNote() {
-  document.getElementById("withdraw-note").innerHTML =
-    `Мин: ${cfg.min_withdraw} · Лимит/сутки: ${cfg.max_withdraw_daily} · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
+  const b = (profile && profile.bonus) || {};
+  let note = `Мин: ${cfg.min_withdraw} · Лимит/сутки: ${cfg.max_withdraw_daily} · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
+  if (b.bonus_active && b.wager_progress < b.wager_required) {
+    const left = (b.wager_required - b.wager_progress).toFixed(2);
+    note = `⚠️ Активен бонус. Для вывода отыграй ещё ${left} ₮ (${b.wager_progress.toFixed(2)}/${b.wager_required.toFixed(2)}). ` + note;
+  }
+  const el = document.getElementById("withdraw-note");
+  if (el) el.innerHTML = note;
 }
 
 async function loadLive() {
@@ -821,10 +863,6 @@ async function loadLive() {
   } catch {}
 }
 
-/* ============ ИГРЫ ============
-   Картинки лежат в папке assets/ твоего репозитория.
-   Расширения: .jpg .png .webp — поменяй в поле img.
-*/
 const games = [
   { id:"crash",     title:"Crash",     img:"./assets/crash.jpg" },
   { id:"mines",     title:"Mines",     img:"./assets/mines.jpg" },
@@ -833,34 +871,42 @@ const games = [
   { id:"plinko",    title:"Plinko",    img:"./assets/plinko.jpg" },
   { id:"blackjack", title:"Blackjack", img:"./assets/blackjack.jpg" },
   { id:"tower",     title:"Tower",     img:"./assets/tower.jpg" },
+  { id:"keno",      title:"Keno",      img:"./assets/keno.jpg" },
+  { id:"hilo",      title:"Hi-Lo",     img:"./assets/hilo.jpg" },
+  { id:"scratch",   title:"Scratch",   img:"./assets/scratch.jpg" },
 ];
 
 function renderGames() {
   const enabled = cfg.games_enabled || {};
+  const b = (profile && profile.bonus) || {};
+  const allowedForBonus = b.bonus_active ? b.bonus_allowed_games : null;
+
   const list = games.filter(g => enabled[g.id] !== false);
   const wrap = document.getElementById("games");
   if (!list.length) {
     wrap.innerHTML = `<div class="text-center text-xs py-8" style="color:var(--muted);">Все игры временно отключены 🛠</div>`;
     return;
   }
-  wrap.innerHTML = list.map(g => `
-    <button class="game-card" data-id="${g.id}" data-title="${g.title}">
+  wrap.innerHTML = list.map(g => {
+    const bonusBlocked = b.bonus_active && Array.isArray(allowedForBonus) && !allowedForBonus.includes(g.id);
+    return `
+    <button class="game-card" data-id="${g.id}" data-title="${g.title}"
+            ${bonusBlocked ? 'data-bonus-blocked="1"' : ''}>
       <div class="game-hero">
         <div class="game-hero-bg">${g.title.toUpperCase()}</div>
-        <img class="game-hero-img"
-             src="${g.img}"
-             alt="${g.title}"
-             loading="lazy"
-             decoding="async"
+        <img class="game-hero-img" src="${g.img}" alt="${g.title}"
+             loading="lazy" decoding="async"
              onerror="this.style.display='none'">
         <div class="game-hero-shade"></div>
         <span class="game-rtp">RTP 96%</span>
+        ${bonusBlocked ? `<span class="game-off">🚫 Бонус</span>` : ''}
       </div>
       <div class="game-overlay">
         <div class="game-name">${g.title}</div>
-        <div class="game-play">Играть</div>
+        <div class="game-play">${bonusBlocked ? 'Заблокировано' : 'Играть'}</div>
       </div>
-    </button>`).join("");
+    </button>`;
+  }).join("");
 }
 
 async function loadLeaderboard(period="week") {
@@ -892,7 +938,7 @@ async function openFriends() {
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(ref.link)}&text=${encodeURIComponent("Играю в GoldCash, залетай!")}`;
     body.innerHTML = `
       <div class="row-item flex-col items-stretch gap-3">
-        <div class="text-xs" style="color:var(--muted)">РЕФЕРАЛКА — ${(cfg.referral_share*100).toFixed(0)}% ОТ ПРОИГРЫША ДРУГА</div>
+        <div class="text-xs" style="color:var(--muted)">РЕФЕРАЛКА — ${(cfg.referral_share*100).toFixed(0)}% ОТ ПРОИГРЫША</div>
         <div class="flex justify-between text-sm">
           <div>Приглашено: <b>${ref.invited_count}</b></div>
           <div>Заработано: <b style="color:var(--green)">${num(ref.earnings).toFixed(2)}</b></div>
@@ -919,29 +965,44 @@ async function openFriends() {
       if (!code) return toast("Введи код");
       try {
         const r = await api("/api/promo/redeem", { method:"POST", body:JSON.stringify({ code }) });
-        toast(`+${r.amount}`);
+        if (r.wager_required > 0) toast(`+${r.amount} ₮ · вейджер ×${r.wager_mult}`, 3500);
+        else toast(`+${r.amount} ₮ 🎉`);
         updateBalance(num(profile.balance) + num(r.amount));
-      } catch (e) { toast(e.message); }
+        api("/api/profile").then(p => { profile = p; renderProfile(); });
+      } catch (e) { toast(e.message, 3500); }
     });
   } catch (e) { body.innerHTML = `<div class="text-red-400 p-4 text-xs">${e.message}</div>`; }
 }
 
 const RULES = {
-  crash: `<b>💥 Crash</b><br>Множитель растёт с 1.00x. Забирай до краша. Работает авто-вывод.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
-  mines: `<b>💎 Mines</b><br>Поле 5×5. Открывай безопасные клетки, множитель растёт.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
-  roulette: `<b>🎡 Рулетка</b><br>RB ×${cfg.payouts.roulette_rb}, дюжина ×${cfg.payouts.roulette_dozen}, число ×${cfg.payouts.roulette_number}<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
-  dice: `<b>🎲 Dice</b><br>Число 1–6, ×${cfg.payouts.dice}.<br><b>RTP:</b> ${(cfg.payouts.dice/6*100).toFixed(2)}%`,
-  plinko: `<b>🔻 Plinko</b><br>Шарик падает, чем дальше от центра — тем выше множитель.<br><b>RTP:</b> ~${(cfg.rtp*100).toFixed(0)}%`,
-  blackjack: `<b>🃏 Blackjack</b><br>Набери 21 или ближе чем дилер. Блэкджек ×2.5.<br><b>RTP:</b> ~${(cfg.rtp*100).toFixed(0)}%`,
-  tower: `<b>🗼 Tower</b><br>6 уровней по 3 двери. Одна мина. ×1.44 за уровень.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
+  crash: `<b>💥 Crash</b><br>Множитель растёт с 1.00x. Забирай до краша. Работает авто-вывод.<br><b>RTP:</b> 96%`,
+  mines: `<b>💎 Mines</b><br>Поле 5×5. Открывай безопасные клетки, множитель растёт.<br><b>RTP:</b> 96%`,
+  roulette: `<b>🎡 Рулетка</b><br>RB ×1.92, дюжина ×2.88, число ×34.56<br><b>RTP:</b> 96%`,
+  dice: `<b>🎲 Dice</b><br>Число 1–6, ×5.76.<br><b>RTP:</b> 96%`,
+  plinko: `<b>🔻 Plinko</b><br>Шарик падает, чем дальше от центра — тем выше множитель.<br><b>RTP:</b> ~96%`,
+  blackjack: `<b>🃏 Blackjack</b><br>Набери 21 или ближе чем дилер. Блэкджек ×2.5.<br><b>RTP:</b> ~96%`,
+  tower: `<b>🗼 Tower</b><br>6 уровней по 3 двери. Одна мина. ×1.44 за уровень.<br><b>RTP:</b> 96%`,
+  keno: `<b>🎯 Keno</b><br>Выбери 1-10 чисел из 80. Рисуется 20. Чем больше угадал — тем выше выплата.<br><b>RTP:</b> ~95%`,
+  hilo: `<b>🃏 Hi-Lo</b><br>Угадай — следующая карта больше или меньше. Множитель растёт с каждым шагом.<br><b>RTP:</b> ~96%`,
+  scratch: `<b>🎟 Scratch</b><br>Открой 3 ячейки. Если 3 одинаковых символа — выигрыш.<br><b>RTP:</b> ~94%`,
 };
+
 function openRules(game) {
   const body = document.getElementById("rules-body");
   const enabled = cfg.games_enabled || {};
+  const b = (profile && profile.bonus) || {};
+  let warn = "";
+  if (game && b.bonus_active && Array.isArray(b.bonus_allowed_games)) {
+    if (!b.bonus_allowed_games.includes(game)) {
+      warn = `<div class="row-item" style="background:rgba(239,68,68,.1); border-color:rgba(239,68,68,.3); color:var(--red);">
+        🚫 Эта игра недоступна с активным бонусом
+      </div>`;
+    }
+  }
   const items = game
     ? [game]
-    : ["crash","mines","roulette","dice","plinko","blackjack","tower"].filter(g => enabled[g] !== false);
-  body.innerHTML = items.map(g => `<div class="row-item" style="display:block;">${RULES[g]}</div>`).join("");
+    : ["crash","mines","roulette","dice","plinko","blackjack","tower","keno","hilo","scratch"].filter(g => enabled[g] !== false);
+  body.innerHTML = warn + items.map(g => `<div class="row-item" style="display:block;">${RULES[g] || ''}</div>`).join("");
   openModal("modal-rules");
 }
 document.getElementById("btn-rules-all").onclick = () => openRules();
@@ -1011,6 +1072,53 @@ async function openProfile() {
     const p = await api("/api/profile"); profile = p; renderProfile();
     const s = p.stats || {};
     const g = (k) => num(s[k]);
+    const bonus = p.bonus || {};
+    const vip = p.vip || {};
+
+    const bonusHtml = (bonus.bonus_active) ? `
+      <div class="row-item flex-col items-stretch gap-2"
+           style="background:rgba(251,191,36,.08); border-color:rgba(251,191,36,.3);">
+        <div class="flex justify-between items-center">
+          <div class="text-xs font-bold" style="color:var(--accent);">🎰 АКТИВНЫЙ БОНУС</div>
+          <div class="text-xs" style="color:var(--muted);">${bonus.bonus_code || ''}</div>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span style="color:var(--muted);">Отыграно</span>
+          <span><b style="color:var(--text);">${bonus.wager_progress.toFixed(2)}</b> /
+                <b>${bonus.wager_required.toFixed(2)}</b> ₮</span>
+        </div>
+        <div style="height:8px; background:var(--surface-2); border-radius:4px; overflow:hidden;">
+          <div style="height:100%; width:${Math.min(100,(bonus.wager_progress/Math.max(1,bonus.wager_required))*100).toFixed(1)}%;
+                      background:linear-gradient(90deg,#fbbf24,#10b981); transition:width .3s;"></div>
+        </div>
+        ${bonus.bonus_max_bet ? `<div class="text-[10px]" style="color:var(--muted);">Макс. ставка: ${bonus.bonus_max_bet} ₮</div>` : ''}
+        ${(() => {
+          const ag = bonus.bonus_allowed_games;
+          if (ag === null || ag === undefined) return `<div class="text-[10px]" style="color:var(--muted);">🎮 Все игры доступны</div>`;
+          if (Array.isArray(ag) && ag.length === 0) return `<div class="text-[10px]" style="color:var(--red);">🚫 Игры заблокированы — только вывод</div>`;
+          return `<div class="text-[10px]" style="color:var(--muted);">🎮 Разрешено: ${ag.join(", ")}</div>`;
+        })()}
+        <div class="text-[10px]" style="color:var(--muted);">Вывод заблокирован до отыгрыша</div>
+      </div>` : '';
+
+    const vipPct = vip.next_required ? Math.min(100, (vip.total_wagered / vip.next_required) * 100) : 100;
+    const vipColor = VIP_COLORS[vip.tier] || "var(--muted)";
+    const vipHtml = `
+      <div class="row-item flex-col items-stretch gap-2">
+        <div class="flex justify-between items-center">
+          <div class="text-sm font-black" style="color:${vipColor};">👑 ${(vip.tier_name || 'Бронза').toUpperCase()}</div>
+          <div class="text-xs" style="color:var(--muted);">Рейкбек ${(vip.rakeback*100).toFixed(1)}%</div>
+        </div>
+        <div class="flex justify-between text-xs">
+          <span style="color:var(--muted);">Оборот: <b style="color:var(--text);">${vip.total_wagered.toFixed(2)}</b> ₮</span>
+          ${vip.next_required ? `<span style="color:var(--muted);">До ${vip.next_tier_name}: <b>${(vip.next_required - vip.total_wagered).toFixed(2)}</b></span>` : `<span style="color:${vipColor};">МАКС 🎉</span>`}
+        </div>
+        <div style="height:6px; background:var(--surface-2); border-radius:3px; overflow:hidden;">
+          <div style="height:100%; width:${vipPct}%; background:${vipColor}; transition:width .3s;"></div>
+        </div>
+        <div class="text-[10px]" style="color:var(--muted);">Рейкбек заработано: ${vip.rakeback_earned.toFixed(2)} ₮</div>
+      </div>`;
+
     body.innerHTML = `
       <div class="row-item flex-col items-stretch gap-2" style="padding:16px;">
         <div class="flex items-center gap-3">
@@ -1024,6 +1132,8 @@ async function openProfile() {
         </div>
         <div class="mt-2 text-2xl font-black" style="color:var(--accent); letter-spacing:-.03em;">${num(p.balance).toFixed(2)} ${p.preferred_currency || "USDT"}</div>
       </div>
+      ${bonusHtml}
+      ${vipHtml}
       <div class="grid grid-cols-2 gap-2">
         <div class="row-item flex-col items-start"><div class="row-sub">ДЕПОЗИТЫ</div><div class="row-amt" style="color:var(--green)">${g("deposits").toFixed(2)}</div></div>
         <div class="row-item flex-col items-start"><div class="row-sub">ВЫВОДЫ</div><div class="row-amt" style="color:var(--red)">${g("withdrawals").toFixed(2)}</div></div>
@@ -1051,6 +1161,153 @@ async function openProfile() {
   } catch (e) { body.innerHTML = `<div class="text-red-400 p-4 text-xs">${e.message}</div>`; }
 }
 
+/* ==================== ADMIN PANEL ==================== */
+async function openAdminPanel() {
+  const body = document.getElementById("profile-body");
+  body.innerHTML = `<div class="skeleton skeleton-row"></div>`;
+  try {
+    const promos = await api("/api/admin/promos");
+    const antifraud = await api("/api/admin/antifraud");
+    body.innerHTML = `
+      <div class="section-title mb-2">🛠 Админ-панель</div>
+
+      <div class="row-item flex-col items-stretch gap-2">
+        <div class="text-xs" style="color:var(--muted);">СОЗДАТЬ ПРОМОКОД</div>
+        <input id="ap-code" class="inp inp-sm" placeholder="CODE (латиницей)">
+        <div class="grid grid-cols-2 gap-2">
+          <input id="ap-amount" type="number" step="0.1" class="inp inp-sm" placeholder="Сумма ₮">
+          <input id="ap-wager" type="number" step="1" class="inp inp-sm" placeholder="Вейджер ×">
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <input id="ap-uses" type="number" class="inp inp-sm" placeholder="Использований">
+          <input id="ap-maxbet" type="number" step="0.1" class="inp inp-sm" placeholder="Макс.ставка ₮">
+        </div>
+        <input id="ap-games" class="inp inp-sm" placeholder="Игры: all / none / dice,mines">
+        <button id="ap-create" class="submit" style="padding:10px;">Создать промокод</button>
+      </div>
+
+      <div class="section-title mt-4 mb-2">🎟 Промокоды (${promos.length})</div>
+      ${promos.length === 0 ? `<div class="text-center text-xs" style="color:var(--muted); padding:10px;">— пусто —</div>` :
+        promos.map(p => {
+          const ag = p.allowed_games;
+          const gtxt = ag == null ? 'все' : (ag.length ? ag.join(',') : 'нет');
+          return `
+          <div class="row-item flex-col items-stretch gap-1">
+            <div class="flex justify-between items-center">
+              <b>${p.code}</b>
+              <button class="ap-del quick-btn" data-code="${p.code}" style="padding:4px 10px;">✖</button>
+            </div>
+            <div class="text-xs" style="color:var(--muted);">
+              ${p.amount}₮ · вейджер ×${p.wager_mult || 0} · ${p.uses}/${p.max_uses || '∞'} · игры: ${gtxt}
+              ${p.max_bet ? ' · макс '+p.max_bet+'₮' : ''}
+            </div>
+          </div>`;
+        }).join("")}
+
+      <div class="section-title mt-4 mb-2">🚨 Antifraud — топ по риску (${antifraud.length})</div>
+      ${antifraud.length === 0 ? `<div class="text-center text-xs" style="color:var(--muted); padding:10px;">— чисто —</div>` :
+        antifraud.slice(0, 20).map(a => `
+          <div class="row-item">
+            <div>
+              <div class="row-name">${a.first_name || a.username || a.telegram_id}</div>
+              <div class="row-sub">risk ${a.risk_score || 0} · ${a.flag_reason || '—'} · ${(a.last_ip||'').slice(0,15)}</div>
+            </div>
+            <div style="color:${a.auto_flagged ? 'var(--red)' : 'var(--muted)'}; font-weight:700;">
+              ${a.auto_flagged ? '🚩' : '✓'}
+            </div>
+          </div>`).join("")}
+    `;
+
+    body.querySelector("#ap-create").onclick = async () => {
+      const code = (body.querySelector("#ap-code").value || "").trim().toUpperCase();
+      const amount = Number(body.querySelector("#ap-amount").value);
+      const wager = Number(body.querySelector("#ap-wager").value) || 0;
+      const uses = body.querySelector("#ap-uses").value;
+      const maxBet = body.querySelector("#ap-maxbet").value;
+      const gamesRaw = (body.querySelector("#ap-games").value || "").trim().toLowerCase();
+      if (!code || !amount) return toast("Заполни код и сумму");
+      let allowed_games;
+      if (gamesRaw === "all" || gamesRaw === "") allowed_games = null;
+      else if (gamesRaw === "none") allowed_games = [];
+      else allowed_games = gamesRaw.split(",").map(x => x.trim()).filter(Boolean);
+
+      const payload = {
+        code, amount, wager_mult: wager,
+        max_uses: uses ? Number(uses) : null,
+        max_bet: maxBet ? Number(maxBet) : null,
+        allowed_games,
+      };
+      try {
+        await api("/api/admin/promos", {method:"POST", body: JSON.stringify(payload)});
+        toast(`✅ ${code}`);
+        openAdminPanel();
+      } catch (e) { toast(e.message); }
+    };
+    body.querySelectorAll(".ap-del").forEach(b => b.onclick = async () => {
+      const code = b.dataset.code;
+      if (!confirm(`Удалить ${code}?`)) return;
+      try { await api(`/api/admin/promos/${code}`, {method:"DELETE"}); toast("✅"); openAdminPanel(); }
+      catch (e) { toast(e.message); }
+    });
+  } catch (e) {
+    body.innerHTML = `<div style="color:var(--red); padding:12px;">${e.message}</div>`;
+  }
+  openModal("modal-profile");
+}
+document.getElementById("btn-admin")?.addEventListener("click", openAdminPanel);
+
+/* ==================== DAILY BONUS ==================== */
+async function loadBonusStatus() {
+  const btn = document.getElementById("btn-bonus");
+  if (!btn) return;
+  try {
+    const r = await api("/api/bonus/daily");
+    if (!r.amount || r.amount <= 0) { btn.classList.add("hidden"); return; }
+    btn.classList.remove("hidden");
+    btn.dataset.available = r.available ? "1" : "0";
+    btn.dataset.amount = r.amount;
+    btn.dataset.next = r.next_in_sec;
+    if (r.available) {
+      btn.innerHTML = "🎁";
+      btn.classList.remove("locked");
+      btn.style.background = "var(--accent)";
+      btn.style.color = "#0a0d12";
+      btn.style.borderColor = "var(--accent)";
+    } else {
+      btn.innerHTML = "⏳";
+      btn.classList.add("locked");
+      btn.style.background = "var(--surface)";
+      btn.style.color = "var(--muted)";
+      btn.style.borderColor = "var(--border-hi)";
+    }
+  } catch {}
+}
+document.getElementById("btn-bonus")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-bonus");
+  if (btn.dataset.available !== "1") {
+    const s = Number(btn.dataset.next || 0);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return toast(`Бонус через ${h}ч ${m}м`);
+  }
+  try {
+    const r = await api("/api/bonus/daily", { method: "POST" });
+    toast(`+${r.amount} ₮ 🎁`);
+    updateBalance(num(profile.balance) + num(r.amount));
+    loadBonusStatus();
+    haptic("medium");
+  } catch (e) { toast(e.message); loadBonusStatus(); }
+});
+
+document.getElementById("sub-check")?.addEventListener("click", async () => {
+  try {
+    await api("/api/profile");
+    closeModal("modal-sub");
+    toast("✅ Подписка подтверждена");
+    location.reload();
+  } catch (e) { toast("❌ Ты ещё не подписан"); }
+});
+
+/* ==================== DEPOSIT / WITHDRAW ==================== */
 document.getElementById("btn-deposit").addEventListener("click", () => openModal("modal-deposit"));
 document.querySelectorAll(".deposit-quick").forEach(b =>
   b.addEventListener("click", () => document.getElementById("deposit-amount").value = b.dataset.v));
@@ -1066,7 +1323,7 @@ document.getElementById("do-deposit").addEventListener("click", async () => {
   try {
     const r = await api("/api/payments/deposit", { method:"POST", body: JSON.stringify({ amount, currency }) });
     closeModal("modal-deposit"); tg.openLink(r.link); toast("Открываем оплату…");
-  } catch (e) { toast("Ошибка: " + e.message); }
+  } catch (e) { toast("Ошибка: " + e.message, 3500); }
   finally { btn.disabled = false; btn.innerText = "Оплатить"; }
 });
 
@@ -1076,6 +1333,11 @@ document.getElementById("do-withdraw").addEventListener("click", async () => {
   const min = cfg.min_withdraw || 0.5;
   if (!amount || amount < min) return toast(`Минимум ${min}`);
   if (amount > num(profile?.balance)) return toast("Недостаточно средств");
+  const b = (profile && profile.bonus) || {};
+  if (b.bonus_active && b.wager_progress < b.wager_required) {
+    const left = (b.wager_required - b.wager_progress).toFixed(2);
+    return toast(`🎰 Отыграй ещё ${left} ₮`, 3500);
+  }
   haptic("medium");
   const btn = document.getElementById("do-withdraw");
   btn.disabled = true; btn.innerText = "Обработка…";
@@ -1083,7 +1345,7 @@ document.getElementById("do-withdraw").addEventListener("click", async () => {
     await api("/api/payments/withdraw", { method:"POST", body: JSON.stringify({ amount, currency }) });
     closeModal("modal-withdraw"); toast("Выплата отправлена");
     updateBalance(num(profile.balance) - amount);
-  } catch (e) { toast("Ошибка: " + e.message); }
+  } catch (e) { toast("Ошибка: " + e.message, 3500); }
   finally { btn.disabled = false; btn.innerText = "Вывести"; }
 });
 
@@ -1103,6 +1365,13 @@ document.querySelectorAll(".lb-tab").forEach(b => b.addEventListener("click", ()
 document.addEventListener("click", e => {
   const card = e.target.closest(".game-card");
   if (!card) return;
+  if (card.dataset.bonusBlocked === "1") {
+    const b = (profile && profile.bonus) || {};
+    const list = b.bonus_allowed_games || [];
+    toast(`🎰 С бонусом доступны только: ${list.join(", ") || "вывод"}`, 3500);
+    haptic("heavy");
+    return;
+  }
   currentGame = card.dataset.id;
   document.getElementById("game-title").innerText = card.dataset.title;
   const gb = document.getElementById("game-balance");
@@ -1115,8 +1384,12 @@ document.addEventListener("click", e => {
   else if (currentGame === "plinko") renderPlinko();
   else if (currentGame === "blackjack") renderBlackjack();
   else if (currentGame === "tower") renderTower();
+  else if (currentGame === "keno") renderKeno();
+  else if (currentGame === "hilo") renderHilo();
+  else if (currentGame === "scratch") renderScratch();
 });
 
+/* ==================== BET HELPERS ==================== */
 function betInputRow(id="bet-input", val=0.5) {
   return `
     <div class="flex items-center gap-2">
@@ -1144,7 +1417,7 @@ function validateBet(v) {
   return true;
 }
 
-/* ============ CRASH ============ */
+/* ==================== CRASH ==================== */
 function renderCrash() {
   const body = document.getElementById("game-body");
   body.innerHTML = `
@@ -1303,7 +1576,7 @@ async function refreshCrashState() {
   } catch (e) {}
 }
 
-/* ============ MINES ============ */
+/* ==================== MINES ==================== */
 function renderMines() {
   const body = document.getElementById("game-body");
   let minesCount = 3;
@@ -1354,8 +1627,7 @@ function renderMines() {
     if (!body.querySelector("#mines-start").classList.contains("hidden")) {
       minesCount = Number(b.dataset.n);
       body.querySelectorAll(".mines-count").forEach(x => x.classList.remove("selected"));
-      b.classList.add("selected");
-      haptic();
+      b.classList.add("selected"); haptic();
     }
   });
   body.querySelector("#mines-start").onclick = async () => {
@@ -1414,7 +1686,7 @@ function renderMines() {
   }
 }
 
-/* ============ ROULETTE ============ */
+/* ==================== ROULETTE ==================== */
 function renderRoulette() {
   const body = document.getElementById("game-body");
   const SEC = 37, ANG = 360 / SEC;
@@ -1461,8 +1733,7 @@ function renderRoulette() {
   body.querySelectorAll(".roul-bet").forEach(b => b.onclick = () => {
     selected = { type: b.dataset.t, value: null };
     body.querySelectorAll(".roul-bet").forEach(x => x.classList.remove("selected"));
-    b.classList.add("selected");
-    haptic();
+    b.classList.add("selected"); haptic();
     body.querySelector("#roul-message").innerHTML = `Выбрано: <b>${b.innerText}</b>`;
   });
   body.querySelector("#roul-num-btn").onclick = () => {
@@ -1509,7 +1780,7 @@ function renderRoulette() {
   };
 }
 
-/* ============ DICE ============ */
+/* ==================== DICE ==================== */
 function renderDice() {
   const body = document.getElementById("game-body");
   let chosen = 1;
@@ -1563,19 +1834,13 @@ function renderDice() {
   };
 }
 
-/* ============ PLINKO ============ */
+/* ==================== PLINKO ==================== */
 function renderPlinko() {
   const body = document.getElementById("game-body");
-  let rows = 12;
-  let lastSlot = null;
-  let busy = false;
-  let ballPos = null;
+  let rows = 12, lastSlot = null, busy = false, ballPos = null;
 
   function buildSVG(mults, rowsN, lastSlotN, ball) {
-    const W = 380;
-    const pegGapY = 26;
-    const paddingTop = 20;
-    const paddingX = 20;
+    const W = 380, pegGapY = 26, paddingTop = 20, paddingX = 20;
     const usableW = W - paddingX * 2;
     const stepX = usableW / rowsN;
     const pegsBottomY = paddingTop + rowsN * pegGapY;
@@ -1605,9 +1870,7 @@ function renderPlinko() {
       slots += `<text x="${x}" y="${slotsY + 17}" font-size="10" font-weight="800" fill="${textFill}" text-anchor="middle" font-family="-apple-system, sans-serif">${m}×</text>`;
     }
     let ballHtml = "";
-    if (ball) {
-      ballHtml = `<circle cx="${ball.x}" cy="${ball.y}" r="6" fill="#fbbf24" stroke="#fff" stroke-width="2" style="filter:drop-shadow(0 0 8px rgba(251,191,36,.8))"/>`;
-    }
+    if (ball) ballHtml = `<circle cx="${ball.x}" cy="${ball.y}" r="6" fill="#fbbf24" stroke="#fff" stroke-width="2" style="filter:drop-shadow(0 0 8px rgba(251,191,36,.8))"/>`;
     return { svg: `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block">${pegs}${slots}${ballHtml}</svg>`,
              W, H, paddingTop, pegGapY, stepX };
   }
@@ -1675,8 +1938,7 @@ function renderPlinko() {
         await new Promise(res => setTimeout(res, 90));
       }
       lastSlot = r.slot;
-      const slotPos = slotCoords(r.slot, geo2);
-      ballPos = slotPos;
+      ballPos = slotCoords(r.slot, geo2);
       body.querySelector("#plinko-container").innerHTML = buildSVG(mults2, r.rows, lastSlot, ballPos).svg;
       m.innerHTML = `Слот <b>${r.slot}</b> — <b>×${r.mult}</b>`;
       const res = body.querySelector("#plinko-result");
@@ -1690,7 +1952,7 @@ function renderPlinko() {
   drawAll();
 }
 
-/* ============ BLACKJACK ============ */
+/* ==================== BLACKJACK ==================== */
 function cardHtml(c, hidden = false) {
   if (hidden) return `<div class="bj-card back">?</div>`;
   const suit = c[0], rank = c[1];
@@ -1799,13 +2061,11 @@ function renderBlackjack() {
   })();
 }
 
-/* ============ TOWER ============ */
+/* ==================== TOWER ==================== */
 function renderTower() {
   const body = document.getElementById("game-body");
   const LEVELS = 6;
-  let active = false;
-  let currentLevel = 0;
-  let initialRevealed = [];
+  let active = false, currentLevel = 0, initialRevealed = [];
 
   function drawTower(revealed = []) {
     let html = "";
@@ -1814,8 +2074,7 @@ function renderTower() {
       const rev = revealed.find(x => x.level === lvl);
       let doors = "";
       for (let d = 0; d < 3; d++) {
-        let cls = "tower-door";
-        let inner = "🚪";
+        let cls = "tower-door"; let inner = "🚪";
         if (rev) {
           if (d === rev.door) { cls += " safe"; inner = "✓"; }
           else cls += " locked";
@@ -1927,8 +2186,223 @@ function renderTower() {
   })();
 }
 
+/* ==================== KENO ==================== */
+function renderKeno() {
+  const body = document.getElementById("game-body");
+  let picked = new Set();
+  body.innerHTML = `
+    <div class="flex flex-col gap-3">
+      <div class="section-title">Выбери 1-10 чисел (1-80)</div>
+      <div id="keno-grid" class="grid grid-cols-8 gap-1"></div>
+      <div class="text-xs text-center" style="color:var(--muted);">
+        Выбрано: <b id="keno-count">0</b>/10
+      </div>
+      <div id="keno-drawn" class="hidden rounded-2xl p-3" style="background:var(--surface); border:1px solid var(--border);">
+        <div class="text-xs mb-1" style="color:var(--muted);">Выпало (20):</div>
+        <div id="keno-drawn-list" class="flex flex-wrap gap-1"></div>
+      </div>
+      ${betInputRow("keno-bet", 0.5)}
+      <button id="keno-play" class="submit">Играть</button>
+      <div id="keno-result" class="text-center text-sm"></div>
+    </div>`;
+  const grid = body.querySelector("#keno-grid");
+  function redraw(drawn) {
+    grid.innerHTML = Array.from({length:80}, (_, i) => {
+      const n = i + 1;
+      const sel = picked.has(n);
+      const hit = drawn && drawn.includes(n);
+      let bg = "var(--surface-2)", col = "var(--text)", bd = "var(--border)";
+      if (hit && sel) { bg = "rgba(16,185,129,.25)"; col = "var(--green)"; bd = "var(--green)"; }
+      else if (hit) { bg = "rgba(251,191,36,.15)"; col = "var(--accent)"; bd = "var(--accent)"; }
+      else if (sel) { bg = "rgba(251,191,36,.25)"; col = "var(--accent)"; bd = "var(--accent)"; }
+      return `<button data-n="${n}" class="aspect-square rounded-md text-[11px] font-bold flex items-center justify-center"
+        style="background:${bg}; border:1px solid ${bd}; color:${col};">${n}</button>`;
+    }).join("");
+  }
+  redraw();
+  grid.onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    const n = Number(b.dataset.n);
+    if (picked.has(n)) picked.delete(n);
+    else if (picked.size < 10) picked.add(n);
+    body.querySelector("#keno-count").innerText = picked.size;
+    redraw(); haptic();
+  };
+  const betEl = () => body.querySelector("#keno-bet");
+  wireBet(body, betEl);
+  body.querySelector("#keno-play").onclick = async () => {
+    if (picked.size < 1) return toast("Выбери 1-10");
+    const bet = Number(betEl().value);
+    if (!validateBet(bet)) return;
+    haptic("medium");
+    const btn = body.querySelector("#keno-play");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/games/keno/play", {method:"POST",
+        body: JSON.stringify({bet, picks: [...picked]})});
+      redraw(r.drawn);
+      body.querySelector("#keno-drawn").classList.remove("hidden");
+      body.querySelector("#keno-drawn-list").innerHTML =
+        r.drawn.map(n => `<span class="text-[10px] px-1.5 py-0.5 rounded"
+          style="background:var(--surface-2); border:1px solid var(--border);">${n}</span>`).join("");
+      const res = body.querySelector("#keno-result");
+      if (r.profit > 0) {
+        res.innerHTML = `<span style="color:var(--green); font-weight:700;">Угадано ${r.hits}/${picked.size} · ×${r.mult} · +${num(r.profit).toFixed(2)}</span>`;
+        updateBalance(num(profile.balance) + num(r.payout));
+      } else {
+        res.innerHTML = `<span style="color:var(--red); font-weight:700;">Угадано ${r.hits}/${picked.size} · −${bet.toFixed(2)}</span>`;
+        updateBalance(num(profile.balance));
+      }
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; }
+  };
+}
+
+/* ==================== HI-LO ==================== */
+function renderHilo() {
+  const body = document.getElementById("game-body");
+  let active = false, current = 7, level = 0, mult = 1.0;
+
+  function draw() {
+    body.innerHTML = `
+      <div class="flex flex-col gap-3">
+        <div class="rounded-2xl flex flex-col items-center justify-center min-h-[180px]"
+             style="background:var(--surface); border:1px solid var(--border);">
+          <div class="text-xs" style="color:var(--muted);">КАРТА</div>
+          <div class="bj-card" style="width:90px; height:126px; font-size:36px; margin-top:8px;">${HILO_NAMES[current] || current}</div>
+        </div>
+        <div class="flex justify-between text-sm" style="color:var(--muted);">
+          <span>Уровень: <b style="color:var(--text);">${level}</b></span>
+          <span>Множитель: <b style="color:var(--green);">×${mult.toFixed(2)}</b></span>
+        </div>
+        <div id="hilo-result" class="text-center text-sm"></div>
+        <div id="hilo-controls"></div>
+      </div>`;
+    const ctl = body.querySelector("#hilo-controls");
+    if (!active) {
+      ctl.innerHTML = `${betInputRow("hilo-bet", 0.5)}<button id="hilo-start" class="submit mt-3">Начать</button>`;
+      const betEl = () => body.querySelector("#hilo-bet");
+      wireBet(body, betEl);
+      ctl.querySelector("#hilo-start").onclick = async () => {
+        const bet = Number(betEl().value);
+        if (!validateBet(bet)) return;
+        haptic("medium");
+        try {
+          const r = await api("/api/games/hilo/start", {method:"POST", body:JSON.stringify({bet})});
+          updateBalance(num(profile.balance) - bet);
+          active = true; current = r.current; level = 0; mult = 1.0;
+          draw();
+        } catch (e) { toast(e.message); }
+      };
+    } else {
+      ctl.innerHTML = `
+        <div class="grid grid-cols-2 gap-2">
+          <button id="hilo-lower" class="submit" style="background:#ef4444; color:#fff;">⬇️ Меньше</button>
+          <button id="hilo-higher" class="submit submit-green">⬆️ Больше</button>
+        </div>
+        <button id="hilo-cashout" class="submit mt-2"
+                style="background:var(--surface); color:var(--text); border:1px solid var(--border-hi);">
+          💰 Забрать ×${mult.toFixed(2)}
+        </button>`;
+      const guess = async dir => {
+        haptic();
+        try {
+          const r = await api("/api/games/hilo/guess", {method:"POST", body:JSON.stringify({direction: dir})});
+          if (r.lost) {
+            body.querySelector("#hilo-result").innerHTML =
+              `<span style="color:var(--red); font-weight:700;">💥 ${HILO_NAMES[r.current]} — проигрыш</span>`;
+            updateBalance(num(profile.balance));
+            active = false;
+            setTimeout(() => { level = 0; mult = 1.0; current = 7; draw(); }, 1400);
+          } else {
+            current = r.current; level = r.level; mult = r.mult;
+            draw();
+          }
+        } catch (e) { toast(e.message); }
+      };
+      ctl.querySelector("#hilo-lower").onclick = () => guess("lower");
+      ctl.querySelector("#hilo-higher").onclick = () => guess("higher");
+      ctl.querySelector("#hilo-cashout").onclick = async () => {
+        haptic("medium");
+        try {
+          const r = await api("/api/games/hilo/cashout", {method:"POST"});
+          updateBalance(num(profile.balance) + num(r.payout));
+          body.querySelector("#hilo-result").innerHTML =
+            `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)} (×${r.mult})</span>`;
+          active = false; level = 0; mult = 1.0;
+          setTimeout(() => draw(), 1400);
+        } catch (e) { toast(e.message); }
+      };
+    }
+  }
+
+  body.innerHTML = `<div class="skeleton skeleton-row"></div>`;
+  (async () => {
+    try {
+      const s = await api("/api/games/hilo/state");
+      if (s.active) { active = true; current = s.current; level = s.level; mult = s.mult; }
+      else { active = false; current = 7; level = 0; mult = 1.0; }
+    } catch { active = false; }
+    draw();
+  })();
+}
+
+/* ==================== SCRATCH ==================== */
+function renderScratch() {
+  const body = document.getElementById("game-body");
+  body.innerHTML = `
+    <div class="flex flex-col gap-3">
+      <div class="rounded-2xl p-3" style="background:var(--surface); border:1px solid var(--border);">
+        <div id="scratch-grid" class="grid grid-cols-3 gap-2"></div>
+      </div>
+      <div class="text-xs text-center" style="color:var(--muted);">3 одинаковых = выигрыш!</div>
+      ${betInputRow("scratch-bet", 0.5)}
+      <button id="scratch-play" class="submit">Стереть</button>
+      <div id="scratch-result" class="text-center text-sm"></div>
+    </div>`;
+  const grid = body.querySelector("#scratch-grid");
+  let revealed = false; let syms = ["❔", "❔", "❔"];
+  const render = () => {
+    grid.innerHTML = syms.map(s => `
+      <button class="aspect-square rounded-lg flex items-center justify-center text-4xl"
+              style="background:${revealed ? "var(--surface-2)" : "linear-gradient(135deg,#2a2f3c,#1a1f28)"};
+                     border:1px solid var(--border-hi);">
+        ${revealed ? s : "❔"}
+      </button>`).join("");
+  };
+  render();
+  const betEl = () => body.querySelector("#scratch-bet");
+  wireBet(body, betEl);
+  body.querySelector("#scratch-play").onclick = async () => {
+    const bet = Number(betEl().value);
+    if (!validateBet(bet)) return;
+    haptic("medium");
+    const btn = body.querySelector("#scratch-play");
+    btn.disabled = true;
+    body.querySelector("#scratch-result").innerHTML = "";
+    try {
+      const r = await api("/api/games/scratch/play", {method:"POST", body:JSON.stringify({bet})});
+      syms = r.cells; revealed = false; render();
+      await new Promise(res => setTimeout(res, 300));
+      revealed = true; render();
+      haptic("light");
+      const res = body.querySelector("#scratch-result");
+      if (r.profit > 0) {
+        res.innerHTML = `<span style="color:var(--green); font-weight:700;">×${r.mult} · +${num(r.profit).toFixed(2)}</span>`;
+        updateBalance(num(profile.balance) + num(r.payout));
+      } else {
+        res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${bet.toFixed(2)}</span>`;
+        updateBalance(num(profile.balance));
+      }
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; }
+  };
+}
+
+/* ==================== POLLING ==================== */
 setInterval(async () => {
   try { const p = await api("/api/profile"); profile = p; renderProfile(); } catch {}
+  loadBonusStatus();
 }, 10000);
 setInterval(loadLive, 8000);
 
