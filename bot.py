@@ -29,7 +29,7 @@ XROCKET_WEBHOOK_SECRET = os.environ["XROCKET_WEBHOOK_SECRET"]
 
 # ---------- clients ----------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-xrocket = xRocketClient(api_key=XROCKET_API_KEY)
+xrocket: xRocketClient | None = None   # создаётся внутри lifespan
 
 
 # ---------- initData validation ----------
@@ -100,6 +100,12 @@ async def cmd_start(message: Message):
 # ---------- fastapi ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global xrocket
+    # Клиент создаётся здесь, потому что aiohttp.ClientSession требует
+    # запущенный event loop, а на уровне модуля его ещё нет.
+    xrocket = xRocketClient(api_key=XROCKET_API_KEY)
+    log.info("xrocket client initialized")
+
     log.info("starting aiogram polling")
     task = asyncio.create_task(dp.start_polling(bot))
     yield
@@ -168,14 +174,18 @@ async def create_deposit(
     p = get_or_create_profile(user)
     client_invoice_id = f"dep_{p['id'][:8]}_{int(time.time())}"
 
-    invoice = await xrocket.create_invoice(
-        amount=amount,
-        currency="USDT",
-        description="Deposit to casino",
-        min_payment=0,
-        num_payments=1,
-        client_invoice_id=client_invoice_id,
-    )
+    try:
+        invoice = await xrocket.create_invoice(
+            amount=amount,
+            currency="USDT",
+            description="Deposit to casino",
+            min_payment=0,
+            num_payments=1,
+            client_invoice_id=client_invoice_id,
+        )
+    except Exception as e:
+        log.exception("create_invoice failed: %s", e)
+        raise HTTPException(400, f"invoice failed: {e}")
 
     supabase.table("transactions").insert({
         "user_id": p["id"],
@@ -219,6 +229,7 @@ async def withdraw(
         log.exception("payout failed: %s", e)
         raise HTTPException(400, f"payout failed: {e}")
 
+    # Списываем баланс только после успешной выплаты
     supabase.rpc("change_balance", {
         "p_user_id": p["id"],
         "p_delta": -amount,
