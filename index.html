@@ -52,6 +52,28 @@
   @keyframes balDown { 0%{color:#facc15; transform:scale(1)} 50%{color:#ef4444; transform:scale(1.15)} 100%{color:#fff; transform:scale(1)} }
   .bal-flash-up { animation: balUp .5s ease; }
   .bal-flash-down { animation: balDown .5s ease; }
+  .dice-face { font-size:80px; line-height:1; text-align:center; }
+  @keyframes dice-roll { 0%{transform:rotate(0) scale(1)} 25%{transform:rotate(90deg) scale(1.2)} 50%{transform:rotate(180deg) scale(.9)} 75%{transform:rotate(270deg) scale(1.2)} 100%{transform:rotate(360deg) scale(1)} }
+  .dice-rolling { animation: dice-roll .5s ease infinite; }
+  .bj-card { display:inline-flex; align-items:center; justify-content:center;
+    width:56px; height:80px; background:#fff; color:#111; border-radius:8px;
+    font-weight:900; font-size:22px; box-shadow:0 2px 8px rgba(0,0,0,.4); margin:0 2px; }
+  .bj-card.red { color:#dc2626; }
+  .bj-card.back { background:linear-gradient(135deg,#7c3aed,#3b82f6); color:#fff; }
+  .plinko-board { display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px 0; }
+  .plinko-row { display:flex; gap:6px; }
+  .plinko-peg { width:8px; height:8px; background:rgba(255,255,255,.35); border-radius:50%; }
+  .plinko-slot { display:flex; gap:3px; justify-content:center; margin-top:6px; }
+  .plinko-cell { min-width:28px; padding:6px 2px; text-align:center; font-size:10px;
+    font-weight:700; border-radius:4px; }
+  .tower-row { display:flex; gap:8px; justify-content:center; margin-bottom:6px; }
+  .tower-door { flex:1; padding:14px 0; text-align:center; border-radius:12px;
+    background:rgba(255,255,255,.06); cursor:pointer; font-weight:700;
+    border:1px solid rgba(255,255,255,.1); }
+  .tower-door.mine { background:#dc2626; }
+  .tower-door.safe { background:#16a34a; }
+  .tower-door.active { background:rgba(250,204,21,.2); }
+  .tower-door.locked { opacity:.4; pointer-events:none; }
 </style>
 </head>
 <body class="text-white min-h-screen">
@@ -170,7 +192,6 @@
     <div id="profile-body" class="space-y-3">
       <div class="skeleton skeleton-row"></div>
       <div class="skeleton skeleton-row"></div>
-      <div class="skeleton skeleton-row"></div>
     </div>
   </div>
 </div>
@@ -210,10 +231,7 @@
       <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold bg-white/10" data-p="week">Неделя</button>
       <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold" data-p="month">Месяц</button>
     </div>
-    <div id="top-body" class="space-y-2">
-      <div class="skeleton skeleton-row"></div>
-      <div class="skeleton skeleton-row"></div>
-    </div>
+    <div id="top-body" class="space-y-2"></div>
   </div>
 </div>
 
@@ -223,10 +241,7 @@
       <h3 class="text-xl font-black">Друзья и промокод</h3>
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
-    <div id="bonus-body" class="space-y-3">
-      <div class="skeleton skeleton-row"></div>
-      <div class="skeleton skeleton-row"></div>
-    </div>
+    <div id="bonus-body" class="space-y-3"></div>
   </div>
 </div>
 
@@ -265,7 +280,7 @@ let cfg = {
   withdraw_cooldown_min: 15, max_withdraw_daily: 500,
   referral_share: 0.05, rtp: 0.96,
   currencies: ["USDT","TON","BTC","ETH","TRX"],
-  payouts: { dice: 5.76, roulette_rb: 1.92, roulette_dozen: 2.88, roulette_number: 34.56 },
+  payouts: { dice: 5.76, roulette_rb: 1.92, roulette_dozen: 2.88, roulette_number: 34.56, plinko: {} },
 };
 let currentGame = null;
 let crashPoll = null, crashLocalAnim = null;
@@ -273,6 +288,7 @@ let _displayedBalance = 0;
 
 const RED_NUMS = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 const ROUL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
+const DICE_EMOJI = ["","⚀","⚁","⚂","⚃","⚄","⚅"];
 
 function toast(msg, ms=2500) {
   const t = document.getElementById("toast");
@@ -320,7 +336,6 @@ function renderProfile() {
   if (gb) gb.innerText = b;
   const name = (profile?.first_name || profile?.username || "?").trim();
   document.getElementById("avatar").innerText = name[0].toUpperCase();
-  // предустановка валюты
   const cur = profile?.preferred_currency || "USDT";
   const dc = document.getElementById("deposit-currency");
   const wc = document.getElementById("withdraw-currency");
@@ -396,16 +411,20 @@ async function loadLive() {
 }
 
 const games = [
-  { id:"crash", title:"Crash", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=CRASH", rtp:"96%" },
-  { id:"mines", title:"Mines", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=MINES", rtp:"96%" },
-  { id:"roulette", title:"Roulette", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=ROULETTE", rtp:"96%" },
+  { id:"crash",     title:"Crash",     img:"https://placehold.co/600x300/1a1a2e/ffffff?text=CRASH" },
+  { id:"mines",     title:"Mines",     img:"https://placehold.co/600x300/1a1a2e/ffffff?text=MINES" },
+  { id:"roulette",  title:"Roulette",  img:"https://placehold.co/600x300/1a1a2e/ffffff?text=ROULETTE" },
+  { id:"dice",      title:"Dice",      img:"https://placehold.co/600x300/1a1a2e/ffffff?text=DICE" },
+  { id:"plinko",    title:"Plinko",    img:"https://placehold.co/600x300/1a1a2e/ffffff?text=PLINKO" },
+  { id:"blackjack", title:"Blackjack", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=BLACKJACK" },
+  { id:"tower",     title:"Tower",     img:"https://placehold.co/600x300/1a1a2e/ffffff?text=TOWER" },
 ];
 function renderGames() {
   document.getElementById("games").innerHTML = games.map(g => `
     <button class="game-card text-left rounded-3xl overflow-hidden relative" data-id="${g.id}" data-title="${g.title}">
       <img src="${g.img}" class="w-full h-40 object-cover opacity-90">
       <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent"></div>
-      <div class="absolute top-3 left-3 rtp-badge">RTP ${g.rtp}</div>
+      <div class="absolute top-3 left-3 rtp-badge">RTP 96%</div>
       <div class="absolute bottom-3 left-3 right-3 flex items-end justify-between">
         <div class="text-2xl font-black">${g.title}</div>
         <div class="grad rounded-full px-4 py-1.5 text-sm font-bold">Играть</div>
@@ -456,17 +475,6 @@ async function openFriends() {
           <a href="${shareUrl}" class="grad rounded-xl py-2 text-sm font-bold text-center">Поделиться</a>
         </div>
       </div>
-      ${ref.invited && ref.invited.length ? `
-        <div class="glass rounded-2xl p-3">
-          <div class="text-sm font-bold mb-2">Последние рефералы</div>
-          <div class="space-y-1">
-            ${ref.invited.slice(0,10).map(u => `
-              <div class="flex justify-between text-xs">
-                <span>${u.name}</span>
-                <span class="text-gray-500">${new Date(u.joined).toLocaleDateString("ru-RU")}</span>
-              </div>`).join("")}
-          </div>
-        </div>` : ""}
       <div class="glass rounded-2xl p-3">
         <div class="text-sm font-bold mb-2">🎟 Промокод</div>
         <div class="flex gap-2">
@@ -491,14 +499,17 @@ async function openFriends() {
 }
 
 const RULES = {
-  crash: `<b>💥 Crash</b><br>Множитель растёт. Забирай до краша.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
+  crash: `<b>💥 Crash</b><br>Множитель растёт с 1.00x. Забирай до краша.<br>Можно задать <b>авто-вывод</b> — сработает автоматически.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
   mines: `<b>💎 Mines</b><br>5×5, мины. Множитель растёт с каждой безопасной.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
   roulette: `<b>🎡 Рулетка</b><br>RB ×${cfg.payouts.roulette_rb}, дюжина ×${cfg.payouts.roulette_dozen}, число ×${cfg.payouts.roulette_number}<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
-  dice: `<b>🎲 Кубик</b><br>Число 1-6, ×${cfg.payouts.dice}<br><b>RTP:</b> ${(cfg.payouts.dice/6*100).toFixed(2)}%`,
+  dice: `<b>🎲 Dice</b><br>Число 1-6, ×${cfg.payouts.dice}<br><b>RTP:</b> ${(cfg.payouts.dice/6*100).toFixed(2)}%`,
+  plinko: `<b>🎰 Plinko</b><br>Шарик падает вниз, чем дальше от центра — тем выше множитель.<br><b>RTP:</b> ~${(cfg.rtp*100).toFixed(0)}%`,
+  blackjack: `<b>🃏 Blackjack</b><br>Набери 21 или ближе к 21 чем дилер. Блэкджек платит ×2.5.<br><b>RTP:</b> ~${(cfg.rtp*100).toFixed(0)}%`,
+  tower: `<b>🗼 Tower</b><br>Проходи уровни. На каждом — 3 двери, одна убивает. Множитель растёт ×1.44 за уровень.<br><b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%`,
 };
 function openRules(game) {
   const body = document.getElementById("rules-body");
-  const items = game ? [game] : ["crash","mines","roulette","dice"];
+  const items = game ? [game] : ["crash","mines","roulette","dice","plinko","blackjack","tower"];
   body.innerHTML = items.map(g => `<div class="glass rounded-2xl p-3">${RULES[g]}</div>`).join("");
   openModal("modal-rules");
 }
@@ -510,7 +521,7 @@ document.getElementById("btn-rules-game").addEventListener("click", (e) => {
 
 async function loadHistory(tab="games") {
   const body = document.getElementById("history-body");
-  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div>`;
   try {
     if (tab === "games") {
       const data = await api("/api/history/games");
@@ -555,26 +566,13 @@ async function loadFairness() {
         </div>
         <div class="text-gray-500">${new Date(r.created_at).toLocaleString("ru-RU")} · nonce ${r.nonce ?? '—'}</div>
         <div class="font-mono break-all text-[10px] text-gray-400">seed: ${r.server_seed || '—'}</div>
-        <div class="font-mono break-all text-[10px] text-gray-500">sha256: ${r.server_seed_hash || '—'}</div>
-        <button class="verify-btn grad rounded-lg px-3 py-1.5 text-xs font-bold mt-1" data-id="${r.id}">Проверить</button>
-        <div class="verify-out text-[11px] mt-1"></div>
       </div>`).join("");
-    body.querySelectorAll(".verify-btn").forEach(b => b.onclick = async () => {
-      const out = b.parentElement.querySelector(".verify-out");
-      out.innerHTML = "Проверка…";
-      try {
-        const v = await api(`/api/fairness/verify/${b.dataset.id}`);
-        out.innerHTML = `<div class="text-gray-400">Пересчитано:</div>
-          <div class="font-mono text-[10px] break-all">${JSON.stringify(v.recomputed)}</div>
-          <div class="text-green-400 font-bold mt-1">✔ Совпадает</div>`;
-      } catch (e) { out.innerHTML = `<span class="text-red-400">${e.message}</span>`; }
-    });
   } catch (e) { body.innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
 }
 
 async function openProfile() {
   const body = document.getElementById("profile-body");
-  body.innerHTML = `<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>`;
+  body.innerHTML = `<div class="skeleton skeleton-row"></div>`;
   try {
     const p = await api("/api/profile"); profile = p; renderProfile();
     const s = p.stats || {};
@@ -681,6 +679,10 @@ document.addEventListener("click", e => {
   if (currentGame === "crash") renderCrash();
   else if (currentGame === "mines") renderMines();
   else if (currentGame === "roulette") renderRoulette();
+  else if (currentGame === "dice") renderDice();
+  else if (currentGame === "plinko") renderPlinko();
+  else if (currentGame === "blackjack") renderBlackjack();
+  else if (currentGame === "tower") renderTower();
 });
 
 function betInputRow(id="bet-input", val=0.5) {
@@ -710,12 +712,13 @@ function validateBet(v) {
   return true;
 }
 
+// ================ CRASH ================
 function renderCrash() {
   const body = document.getElementById("game-body");
   body.innerHTML = `
     <div class="flex flex-col h-full gap-3">
       <div id="crash-history" class="flex gap-1.5 overflow-x-auto no-scrollbar"></div>
-      <div class="relative rounded-3xl bg-gradient-to-b from-purple-900/40 to-black/40 flex flex-col items-center justify-center min-h-[220px]">
+      <div class="relative rounded-3xl bg-gradient-to-b from-purple-900/40 to-black/40 flex flex-col items-center justify-center min-h-[180px]">
         <div id="crash-mult" class="text-6xl font-black tabular-nums">1.00x</div>
         <div id="crash-status" class="mt-2 text-sm text-gray-400">Подключение…</div>
         <div id="crash-timer" class="text-xs text-gray-500 mt-1"></div>
@@ -723,6 +726,13 @@ function renderCrash() {
       <div>
         <div id="crash-betbox-inner">
           ${betInputRow("crash-bet", 0.5)}
+          <div class="glass rounded-xl p-2 mt-2">
+            <label class="flex items-center gap-2 text-xs">
+              <input type="checkbox" id="crash-auto-on" class="w-4 h-4">
+              <span>Авто-вывод на ×</span>
+              <input id="crash-auto-mult" type="number" step="0.1" min="1.01" value="2.0" class="flex-1 bg-white/5 rounded-lg px-2 py-1 text-center">
+            </label>
+          </div>
           <button id="crash-bet-btn" class="grad w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Сделать ставку</button>
         </div>
         <button id="crash-cashout-btn" class="hidden bg-green-600 w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Забрать</button>
@@ -741,11 +751,14 @@ function renderCrash() {
   body.querySelector("#crash-bet-btn").onclick = async () => {
     const bet = Number(betEl().value);
     if (!validateBet(bet)) return;
+    const autoOn = body.querySelector("#crash-auto-on").checked;
+    const autoMult = autoOn ? Number(body.querySelector("#crash-auto-mult").value) : null;
+    if (autoOn && (!autoMult || autoMult < 1.01 || autoMult > 100)) return toast("Авто 1.01..100");
     haptic();
     try {
-      await api("/api/crash/bet", { method:"POST", body:JSON.stringify({ bet }) });
+      await api("/api/crash/bet", { method:"POST", body:JSON.stringify({ bet, auto_cashout_mult: autoMult }) });
       updateBalance(num(profile.balance) - bet);
-      toast("Ставка принята");
+      toast(autoMult ? `Ставка принята (авто ×${autoMult})` : "Ставка принята");
       refreshCrashState();
     } catch (e) { toast(e.message); }
   };
@@ -815,7 +828,10 @@ async function refreshCrashState() {
     betBox.classList.toggle("hidden", !canBet);
     cashBtn.classList.toggle("hidden", !canCash);
     if (my) {
-      if (my.status === "active") myStatus.innerHTML = `<span class="text-yellow-400">Ставка ${num(my.amount).toFixed(2)}</span>`;
+      if (my.status === "active") {
+        const auto = my.auto_cashout_mult ? ` · авто ×${num(my.auto_cashout_mult).toFixed(2)}` : "";
+        myStatus.innerHTML = `<span class="text-yellow-400">Ставка ${num(my.amount).toFixed(2)}${auto}</span>`;
+      }
       else if (my.status === "cashed") myStatus.innerHTML = `<span class="text-green-400">✅ ×${num(my.cashout_mult).toFixed(2)} · +${num(my.payout - my.amount).toFixed(2)}</span>`;
       else if (my.status === "lost") myStatus.innerHTML = `<span class="text-red-400">❌ −${num(my.amount).toFixed(2)}</span>`;
     } else if (st.status === "running") myStatus.innerHTML = `<span class="text-gray-500">Ты не в этом раунде</span>`;
@@ -829,7 +845,7 @@ async function refreshCrashState() {
       } else {
         listEl.innerHTML = st.bets.map(b => {
           let right = ""; let cls = "text-gray-400";
-          if (b.status === "active") { right = `${num(b.amount).toFixed(2)}`; cls = "text-yellow-400"; }
+          if (b.status === "active") { right = `${num(b.amount).toFixed(2)}${b.auto_cashout_mult ? ' ⚡×'+num(b.auto_cashout_mult).toFixed(2) : ''}`; cls = "text-yellow-400"; }
           else if (b.status === "cashed") { right = `×${num(b.cashout_mult).toFixed(2)} → +${num(b.payout - b.amount).toFixed(2)}`; cls = "text-green-400"; }
           else if (b.status === "lost") { right = `−${num(b.amount).toFixed(2)}`; cls = "text-red-400"; }
           return `<div class="flex items-center justify-between glass rounded-xl px-3 py-2 text-sm ${b.is_me?'ring-1 ring-yellow-400/40':''}">
@@ -848,6 +864,7 @@ async function refreshCrashState() {
   } catch (e) {}
 }
 
+// ================ MINES ================
 function renderMines() {
   const body = document.getElementById("game-body");
   let minesCount = 3;
@@ -949,6 +966,7 @@ function renderMines() {
   }
 }
 
+// ================ ROULETTE ================
 function renderRoulette() {
   const body = document.getElementById("game-body");
   const SEC = 37, ANG = 360 / SEC;
@@ -986,15 +1004,6 @@ function renderRoulette() {
       ${betInputRow("roul-bet", 0.5)}
       <button id="roul-spin" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Крутить</button>
       <div id="roul-result" class="text-center text-sm"></div>
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-bold">Ставки игроков</div>
-          <button id="roul-refresh" class="text-xs text-gray-400 underline">обновить</button>
-        </div>
-        <div id="roul-bets" class="space-y-1.5 max-h-[220px] overflow-y-auto no-scrollbar">
-          <div class="skeleton skeleton-row"></div>
-        </div>
-      </div>
     </div>`;
   const betEl = () => body.querySelector("#roul-bet");
   wireBet(body, betEl);
@@ -1015,33 +1024,6 @@ function renderRoulette() {
     body.querySelectorAll(".roul-bet").forEach(x => x.classList.remove("bg-white/10"));
     body.querySelector("#roul-message").innerHTML = `Выбрано: <b>число ${n}</b>`;
   };
-  async function loadRoulBets() {
-    const wrap = body.querySelector("#roul-bets");
-    try {
-      const data = await api("/api/roulette/bets");
-      if (!data.length) { wrap.innerHTML = `<div class="text-gray-500 text-sm text-center py-3">Пока нет ставок</div>`; return; }
-      const BT = { red:"🔴", black:"⚫", odd:"Нечёт", even:"Чёт", dozen1:"1–12", dozen2:"13–24", dozen3:"25–36", number:"Число" };
-      wrap.innerHTML = data.map(b => `
-        <div class="flex items-center justify-between glass rounded-xl px-3 py-2 text-sm">
-          <div class="flex items-center gap-2 min-w-0">
-            <div class="w-7 h-7 rounded-full grad flex items-center justify-center text-xs font-bold shrink-0">
-              ${(b.name||"?").charAt(0).toUpperCase()}
-            </div>
-            <div class="min-w-0">
-              <div class="font-semibold truncate">${b.name}</div>
-              <div class="text-[10px] text-gray-400">${BT[b.bet_type] || b.bet_type || ""} · ${num(b.amount).toFixed(2)}</div>
-            </div>
-          </div>
-          <div class="text-right shrink-0 ml-2">
-            <div class="font-bold ${b.win ? 'text-green-400' : 'text-red-400'}">
-              ${b.win ? '+' + num(b.profit).toFixed(2) : num(b.profit).toFixed(2)}
-            </div>
-          </div>
-        </div>`).join("");
-    } catch (e) { wrap.innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
-  }
-  body.querySelector("#roul-refresh").onclick = loadRoulBets;
-  loadRoulBets();
   body.querySelector("#roul-spin").onclick = async () => {
     if (!selected) return toast("Выберите ставку");
     const bet = Number(betEl().value);
@@ -1071,10 +1053,377 @@ function renderRoulette() {
           updateBalance(num(profile.balance));
         }
         spinBtn.disabled = false;
-        loadRoulBets();
       }, 4600);
     } catch (e) { toast(e.message); spinBtn.disabled = false; }
   };
+}
+
+// ================ DICE ================
+function renderDice() {
+  const body = document.getElementById("game-body");
+  let chosen = 1;
+  body.innerHTML = `
+    <div class="flex flex-col h-full gap-3">
+      <div class="rounded-3xl bg-gradient-to-b from-purple-900/40 to-black/40 flex items-center justify-center min-h-[180px]">
+        <div id="dice-face" class="dice-face">🎲</div>
+      </div>
+      <div id="dice-message" class="text-center text-sm text-gray-400">Выбери число (×${cfg.payouts.dice})</div>
+      <div class="grid grid-cols-6 gap-2">
+        ${[1,2,3,4,5,6].map(n=>`<button class="dice-num glass rounded-xl py-3 text-2xl font-bold ${n===1?'bg-white/10':''}" data-n="${n}">${n}</button>`).join("")}
+      </div>
+      ${betInputRow("dice-bet", 0.5)}
+      <button id="dice-roll" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Бросить</button>
+      <div id="dice-result" class="text-center text-sm"></div>
+    </div>`;
+  const betEl = () => body.querySelector("#dice-bet");
+  wireBet(body, betEl);
+  body.querySelectorAll(".dice-num").forEach(b => b.onclick = () => {
+    chosen = Number(b.dataset.n);
+    body.querySelectorAll(".dice-num").forEach(x => x.classList.remove("bg-white/10"));
+    b.classList.add("bg-white/10");
+    body.querySelector("#dice-message").innerHTML = `Выбрано: <b>${chosen}</b>`;
+  });
+  body.querySelector("#dice-roll").onclick = async () => {
+    const bet = Number(betEl().value);
+    if (!validateBet(bet)) return;
+    haptic("medium");
+    const faceEl = body.querySelector("#dice-face");
+    const rollBtn = body.querySelector("#dice-roll");
+    rollBtn.disabled = true;
+    faceEl.classList.add("dice-rolling");
+    body.querySelector("#dice-result").innerHTML = "";
+    try {
+      const r = await api("/api/games/dice/bet", { method:"POST",
+        body: JSON.stringify({ bet, chosen }) });
+      await new Promise(res => setTimeout(res, 700));
+      faceEl.classList.remove("dice-rolling");
+      faceEl.innerText = DICE_EMOJI[r.result] || "🎲";
+      const res = body.querySelector("#dice-result");
+      if (r.win) {
+        res.innerHTML = `<span class="text-green-400">✅ Выпало ${r.result} — выигрыш +${num(r.profit).toFixed(2)}</span>`;
+        updateBalance(num(profile.balance) + num(r.payout));
+      } else {
+        res.innerHTML = `<span class="text-red-400">❌ Выпало ${r.result} — −${num(bet).toFixed(2)}</span>`;
+        updateBalance(num(profile.balance));
+      }
+      rollBtn.disabled = false;
+    } catch (e) { toast(e.message); faceEl.classList.remove("dice-rolling"); rollBtn.disabled = false; }
+  };
+}
+
+// ================ PLINKO ================
+function renderPlinko() {
+  const body = document.getElementById("game-body");
+  let rows = 12;
+  let lastSlot = null, lastMult = null;
+  function drawBoard() {
+    const mults = cfg.payouts.plinko[rows] || [];
+    let rowsHtml = "";
+    for (let i = 0; i <= rows; i++) {
+      rowsHtml += `<div class="plinko-row">${Array.from({length: i+1}, () => '<div class="plinko-peg"></div>').join("")}</div>`;
+    }
+    const cells = mults.map((m, i) => {
+      let color;
+      const isLast = (i === lastSlot);
+      const v = Number(m);
+      if (v >= 5) color = "bg-red-500/60 text-white";
+      else if (v >= 2) color = "bg-orange-500/60 text-white";
+      else if (v >= 1) color = "bg-yellow-500/60 text-black";
+      else color = "bg-white/10 text-gray-300";
+      const ring = isLast ? "ring-2 ring-yellow-400" : "";
+      return `<div class="plinko-cell ${color} ${ring}">${v}x</div>`;
+    }).join("");
+    return `
+      <div class="rounded-3xl bg-black/30 p-3">
+        <div class="plinko-board">${rowsHtml}</div>
+        <div class="plinko-slot">${cells}</div>
+      </div>`;
+  }
+  function drawAll() {
+    body.innerHTML = `
+      <div class="flex flex-col h-full gap-3">
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-400">Ряды:</span>
+          ${[8,12,16].map(n=>`<button class="plinko-rows flex-1 glass rounded-xl py-2 text-sm font-bold ${n===rows?'bg-white/10':''}" data-n="${n}">${n}</button>`).join("")}
+        </div>
+        ${drawBoard()}
+        <div id="plinko-message" class="text-center text-sm text-gray-400">Ставь и бросай шарик</div>
+        ${betInputRow("plinko-bet", 0.5)}
+        <button id="plinko-drop" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Бросить</button>
+        <div id="plinko-result" class="text-center text-sm"></div>
+      </div>`;
+    const betEl = () => body.querySelector("#plinko-bet");
+    wireBet(body, betEl);
+    body.querySelectorAll(".plinko-rows").forEach(b => b.onclick = () => {
+      rows = Number(b.dataset.n); lastSlot = null; lastMult = null; drawAll();
+    });
+    body.querySelector("#plinko-drop").onclick = async () => {
+      const bet = Number(betEl().value);
+      if (!validateBet(bet)) return;
+      haptic("medium");
+      const btn = body.querySelector("#plinko-drop");
+      btn.disabled = true;
+      body.querySelector("#plinko-result").innerHTML = "";
+      try {
+        const r = await api("/api/games/plinko/drop", { method:"POST",
+          body: JSON.stringify({ bet, rows }) });
+        lastSlot = r.slot; lastMult = r.mult;
+        // проигрываем анимацию подсветки шагами
+        const m = body.querySelector("#plinko-message");
+        let step = 0;
+        const interval = setInterval(() => {
+          step++;
+          m.innerHTML = `Шарик падает… шаг ${step}/${rows}`;
+          if (step >= rows) clearInterval(interval);
+        }, 120);
+        await new Promise(res => setTimeout(res, rows * 120 + 300));
+        // перерисовываем доску с подсветкой
+        const board = body.querySelector(".rounded-3xl");
+        const tmp = document.createElement("div");
+        tmp.innerHTML = drawBoard();
+        board.replaceWith(tmp.firstElementChild);
+        m.innerHTML = `Упал в слот <b>${r.slot}</b> — ×${r.mult}`;
+        const res = body.querySelector("#plinko-result");
+        if (r.profit > 0) {
+          res.innerHTML = `<span class="text-green-400">✅ +${num(r.profit).toFixed(2)}</span>`;
+          updateBalance(num(profile.balance) + num(r.payout));
+        } else {
+          res.innerHTML = `<span class="text-red-400">❌ −${Math.abs(num(r.profit)).toFixed(2)}</span>`;
+          updateBalance(num(profile.balance) + num(r.payout));
+        }
+        btn.disabled = false;
+      } catch (e) { toast(e.message); btn.disabled = false; }
+    };
+  }
+  drawAll();
+}
+
+// ================ BLACKJACK ================
+function cardHtml(c, hidden = false) {
+  if (hidden) return `<div class="bj-card back">?</div>`;
+  const suit = c[0], rank = c[1];
+  const red = (suit === "H" || suit === "D");
+  const suits = {S:"♠",H:"♥",D:"♦",C:"♣"};
+  return `<div class="bj-card ${red?'red':''}">${rank}${suits[suit]}</div>`;
+}
+function renderBlackjack() {
+  const body = document.getElementById("game-body");
+  let gameActive = false;
+  function drawGame(state) {
+    const inGame = state && !state.finished;
+    gameActive = inGame;
+    const playerCards = state ? state.player : [];
+    const dealerCards = state ? state.dealer : [];
+    const hideDealer = inGame;
+    body.innerHTML = `
+      <div class="flex flex-col h-full gap-3">
+        <div class="rounded-3xl bg-black/30 p-4 min-h-[140px]">
+          <div class="text-xs text-gray-400 mb-2">Дилер ${state ? "· "+state.dealer_value : ""}</div>
+          <div class="flex justify-center flex-wrap">${dealerCards.map((c,i) => cardHtml(c, hideDealer && i === 1)).join("") || '<div class="text-gray-600 text-sm">—</div>'}</div>
+        </div>
+        <div class="rounded-3xl bg-black/30 p-4 min-h-[140px]">
+          <div class="text-xs text-gray-400 mb-2">Ты ${state ? "· "+state.player_value : ""}</div>
+          <div class="flex justify-center flex-wrap">${playerCards.map(c => cardHtml(c)).join("") || '<div class="text-gray-600 text-sm">—</div>'}</div>
+        </div>
+        <div id="bj-result" class="text-center text-sm"></div>
+        <div id="bj-controls"></div>
+      </div>`;
+    const controls = body.querySelector("#bj-controls");
+    if (!inGame) {
+      controls.innerHTML = `
+        ${betInputRow("bj-bet", 0.5)}
+        <button id="bj-start" class="grad w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Раздать</button>`;
+      const betEl = () => body.querySelector("#bj-bet");
+      wireBet(body, betEl);
+      controls.querySelector("#bj-start").onclick = async () => {
+        const bet = Number(betEl().value);
+        if (!validateBet(bet)) return;
+        haptic("medium");
+        try {
+          const r = await api("/api/games/blackjack/start", { method:"POST", body:JSON.stringify({ bet }) });
+          updateBalance(num(profile.balance) - bet);
+          drawGame(r);
+          if (r.finished) showResult(r);
+        } catch (e) { toast(e.message); }
+      };
+    } else {
+      controls.innerHTML = `
+        <div class="grid grid-cols-2 gap-3">
+          <button id="bj-hit" class="grad rounded-2xl py-3.5 font-bold text-lg">Ещё</button>
+          <button id="bj-stand" class="bg-green-600 rounded-2xl py-3.5 font-bold text-lg">Хватит</button>
+        </div>`;
+      controls.querySelector("#bj-hit").onclick = async () => {
+        haptic();
+        try {
+          const r = await api("/api/games/blackjack/hit", { method:"POST" });
+          drawGame(r);
+          if (r.finished) showResult(r);
+        } catch (e) { toast(e.message); }
+      };
+      controls.querySelector("#bj-stand").onclick = async () => {
+        haptic();
+        try {
+          const r = await api("/api/games/blackjack/stand", { method:"POST" });
+          drawGame(r);
+          showResult(r);
+        } catch (e) { toast(e.message); }
+      };
+    }
+  }
+  function showResult(r) {
+    const res = body.querySelector("#bj-result");
+    if (!res) return;
+    if (r.push) {
+      res.innerHTML = `<span class="text-yellow-400">🤝 Ничья — ставка возвращена</span>`;
+    } else if (r.win) {
+      res.innerHTML = `<span class="text-green-400">✅ Победа! +${num(r.profit).toFixed(2)}</span>`;
+      updateBalance(num(profile.balance) + num(r.payout));
+    } else {
+      res.innerHTML = `<span class="text-red-400">❌ Проигрыш −${Math.abs(num(r.profit)).toFixed(2)}</span>`;
+    }
+    // кнопка «ещё»
+    const again = document.createElement("button");
+    again.className = "grad w-full rounded-2xl py-3 font-bold mt-3";
+    again.innerText = "Ещё раз";
+    again.onclick = () => drawGame(null);
+    res.parentElement.appendChild(again);
+  }
+  drawGame(null);
+}
+
+// ================ TOWER ================
+function renderTower() {
+  const body = document.getElementById("game-body");
+  const LEVELS = 6;
+  let active = false;
+  let minePositions = null;
+  let currentLevel = 0;
+  function drawTower(revealed = [], locked = false) {
+    let html = "";
+    for (let lvl = LEVELS - 1; lvl >= 0; lvl--) {
+      const isActive = (lvl === currentLevel && !locked);
+      const rev = revealed.find(x => x.level === lvl);
+      let doors = "";
+      for (let d = 0; d < 3; d++) {
+        let cls = "tower-door";
+        let inner = "🚪";
+        if (rev) {
+          if (d === rev.mine && rev.mine !== rev.door) cls += " mine";
+          else if (d === rev.door) cls += " safe";
+          else cls += " locked";
+        } else if (isActive) {
+          cls += " active";
+        } else if (lvl < currentLevel) {
+          cls += " locked";
+        }
+        doors += `<div class="${cls}" data-level="${lvl}" data-door="${d}">${inner}</div>`;
+      }
+      html += `<div class="tower-row">${doors}</div>`;
+    }
+    return html;
+  }
+  function drawAll(revealed = [], locked = false) {
+    const mult = currentLevel === 0 ? 1 : Number((1.44 ** currentLevel).toFixed(2));
+    body.innerHTML = `
+      <div class="flex flex-col h-full gap-3">
+        <div class="flex items-center justify-between">
+          <div class="text-sm text-gray-400">Уровень: <b class="text-white">${currentLevel}</b></div>
+          <div class="text-sm text-gray-400">Множитель: <b class="text-green-400">×${mult}</b></div>
+        </div>
+        <div id="tower-board" class="rounded-3xl bg-black/30 p-3">${drawTower(revealed, locked)}</div>
+        <div id="tower-result" class="text-center text-sm"></div>
+        ${!active ? `
+          ${betInputRow("tower-bet", 0.5)}
+          <button id="tower-start" class="grad w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Старт</button>` : `
+          <button id="tower-cashout" class="bg-green-600 w-full rounded-2xl py-3.5 font-bold text-lg">Забрать ×${mult}</button>`}
+      </div>`;
+    if (!active) {
+      const betEl = () => body.querySelector("#tower-bet");
+      wireBet(body, betEl);
+      body.querySelector("#tower-start").onclick = async () => {
+        const bet = Number(betEl().value);
+        if (!validateBet(bet)) return;
+        haptic("medium");
+        try {
+          const r = await api("/api/games/tower/start", { method:"POST", body:JSON.stringify({ bet }) });
+          updateBalance(num(profile.balance) - bet);
+          active = true; currentLevel = 0; minePositions = null;
+          drawAll([], false);
+          bindDoors();
+        } catch (e) { toast(e.message); }
+      };
+    } else {
+      body.querySelector("#tower-cashout").onclick = async () => {
+        haptic("medium");
+        try {
+          const r = await api("/api/games/tower/cashout", { method:"POST" });
+          updateBalance(num(profile.balance) + num(r.payout));
+          body.querySelector("#tower-result").innerHTML = `<span class="text-green-400">✅ Забрано +${num(r.profit).toFixed(2)} (×${r.mult})</span>`;
+          active = false; currentLevel = 0;
+          const board = body.querySelector("#tower-board");
+          board.innerHTML = drawTower(r.revealed || [], true);
+          // показываем все мины
+          const allDoors = board.querySelectorAll(".tower-door");
+          allDoors.forEach(el => {
+            const lvl = Number(el.dataset.level);
+            const door = Number(el.dataset.door);
+            if (r.mine_positions && lvl < r.mine_positions.length) {
+              const mine = r.mine_positions[lvl];
+              if (door === mine) el.classList.add("mine");
+              el.classList.add("locked");
+              el.innerText = door === mine ? "💣" : "🚪";
+            } else {
+              el.classList.add("locked");
+            }
+          });
+          // кнопка «ещё раз»
+          setTimeout(() => { drawAll([], false); }, 2500);
+        } catch (e) { toast(e.message); }
+      };
+      bindDoors();
+    }
+  }
+  function bindDoors() {
+    const board = body.querySelector("#tower-board");
+    board.querySelectorAll(".tower-door.active").forEach(el => {
+      el.onclick = async () => {
+        const lvl = Number(el.dataset.level);
+        const door = Number(el.dataset.door);
+        haptic();
+        try {
+          const r = await api("/api/games/tower/step", { method:"POST", body:JSON.stringify({ door }) });
+          if (r.lost) {
+            active = false;
+            const board = body.querySelector("#tower-board");
+            // показать все мины
+            const allDoors = board.querySelectorAll(".tower-door");
+            allDoors.forEach(el2 => {
+              const l = Number(el2.dataset.level);
+              const d = Number(el2.dataset.door);
+              el2.classList.add("locked");
+              if (r.mine !== undefined && l === lvl) {
+                el2.innerText = d === r.mine ? "💣" : "🚪";
+                if (d === r.mine) el2.classList.add("mine");
+              } else {
+                el2.innerText = "🚪";
+              }
+            });
+            body.querySelector("#tower-result").innerHTML = `<span class="text-red-400">💥 Мина на уровне ${lvl+1}</span>`;
+            setTimeout(() => { currentLevel = 0; drawAll([], false); }, 2500);
+          } else {
+            currentLevel = r.level;
+            // сохраняем открытые двери
+            const revealed = [];
+            for (let i = 0; i < r.level; i++) {
+              revealed.push({ level: i, door: 0, mine: r.all_levels ? r.all_levels[i] : -1 });
+            }
+            drawAll(revealed, false);
+          }
+        } catch (e) { toast(e.message); }
+      };
+    });
+  }
+  drawAll([], false);
 }
 
 setInterval(async () => {
