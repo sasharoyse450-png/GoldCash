@@ -86,7 +86,6 @@
     background: rgba(251,191,36,.1); border-radius: 6px;
   }
 
-  /* ========== BIG GAME CARDS ========== */
   .game-card {
     position: relative;
     display: block;
@@ -165,14 +164,6 @@
   .game-card.plinko    .game-hero { background: radial-gradient(120% 100% at 0% 0%, #1f1a0e 0%, #100d08 100%); }
   .game-card.blackjack .game-hero { background: radial-gradient(120% 100% at 0% 0%, #0d1e16 0%, #071009 100%); }
   .game-card.tower     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #1a1024 0%, #0e0815 100%); }
-
-  .game-card.mines     .game-hero-bg { color: rgba(255,255,255,.07); }
-  .game-card.crash     .game-hero-bg { color: rgba(255,255,255,.08); }
-  .game-card.roulette  .game-hero-bg { color: rgba(255,255,255,.07); }
-  .game-card.dice      .game-hero-bg { color: rgba(255,255,255,.09); }
-  .game-card.plinko    .game-hero-bg { color: rgba(255,255,255,.07); }
-  .game-card.blackjack .game-hero-bg { color: rgba(255,255,255,.07); }
-  .game-card.tower     .game-hero-bg { color: rgba(255,255,255,.08); }
 
   .nav { background: var(--bg); border-top: 1px solid var(--border); }
   .nav-btn {
@@ -266,12 +257,6 @@
   .dice-face { font-size: 96px; line-height: 1; text-align: center; }
   @keyframes dice-roll { 0%{transform:rotate(0) scale(1)} 25%{transform:rotate(90deg) scale(1.15)} 50%{transform:rotate(180deg) scale(.9)} 75%{transform:rotate(270deg) scale(1.15)} 100%{transform:rotate(360deg) scale(1)} }
   .dice-rolling { animation: dice-roll .5s ease infinite; }
-
-  .plinko-board { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 12px 0; }
-  .plinko-row { display: flex; gap: 6px; }
-  .plinko-peg { width: 6px; height: 6px; background: rgba(255,255,255,.25); border-radius: 50%; }
-  .plinko-slot { display: flex; gap: 3px; justify-content: center; margin-top: 8px; }
-  .plinko-cell { min-width: 26px; padding: 5px 2px; text-align: center; font-size: 9px; font-weight: 800; border-radius: 4px; }
 
   .tower-row { display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; }
   .tower-door {
@@ -1372,41 +1357,92 @@ function renderDice() {
   };
 }
 
-/* ============ PLINKO ============ */
+/* ============ PLINKO (полностью переписан) ============ */
 function renderPlinko() {
   const body = document.getElementById("game-body");
   let rows = 12;
   let lastSlot = null;
-  function drawBoard() {
-    const mults = cfg.payouts.plinko[rows] || [];
-    let rowsHtml = "";
-    for (let i = 0; i <= rows; i++) {
-      rowsHtml += `<div class="plinko-row">${Array.from({length: i+1}, () => '<div class="plinko-peg"></div>').join("")}</div>`;
+  let ballPos = null;
+  let busy = false;
+  let currentPath = null;
+  let container = null;
+
+  // строим SVG доску
+  function buildSVG(mults, rowsN, lastSlotN, ball) {
+    const W = 380;
+    const pegGapY = 26;
+    const paddingTop = 20;
+    const paddingX = 20;
+    const usableW = W - paddingX * 2;
+    const stepX = usableW / rowsN;
+
+    const pegsBottomY = paddingTop + rowsN * pegGapY;
+    const slotsY = pegsBottomY + 22;
+    const H = slotsY + 34;
+
+    // точки
+    let pegs = "";
+    for (let i = 0; i <= rowsN; i++) {
+      for (let j = 0; j <= i; j++) {
+        const x = W/2 + (j - i/2) * stepX;
+        const y = paddingTop + i * pegGapY;
+        pegs += `<circle cx="${x}" cy="${y}" r="2.6" fill="rgba(255,255,255,.35)"/>`;
+      }
     }
-    const cells = mults.map((m, i) => {
-      const v = Number(m);
-      let style;
-      if (v >= 5) style = "background:rgba(239,68,68,.4); color:#fff;";
-      else if (v >= 2) style = "background:rgba(251,191,36,.4); color:#fff;";
-      else if (v >= 1) style = "background:rgba(251,191,36,.15); color:#fbbf24;";
-      else style = "background:var(--surface-2); color:var(--muted);";
-      const ring = (i === lastSlot) ? "outline:2px solid var(--accent);" : "";
-      return `<div class="plinko-cell" style="${style}${ring}">${v}×</div>`;
-    }).join("");
-    return `
-      <div class="rounded-2xl p-3" style="background:var(--surface); border:1px solid var(--border);">
-        <div class="plinko-board">${rowsHtml}</div>
-        <div class="plinko-slot">${cells}</div>
-      </div>`;
+
+    // слоты
+    let slots = "";
+    const slotW = stepX * 0.92;
+    for (let k = 0; k <= rowsN; k++) {
+      const x = W/2 + (k - rowsN/2) * stepX;
+      const m = Number(mults[k]);
+      let fill;
+      let textFill = "#fff";
+      if (m >= 5) { fill = "rgba(239,68,68,.55)"; }
+      else if (m >= 2) { fill = "rgba(251,191,36,.55)"; }
+      else if (m >= 1) { fill = "rgba(251,191,36,.25)"; textFill = "#fbbf24"; }
+      else { fill = "rgba(255,255,255,.08)"; textFill = "var(--muted)"; }
+      const stroke = k === lastSlotN ? "#fbbf24" : "none";
+      slots += `<rect x="${x - slotW/2}" y="${slotsY}" width="${slotW}" height="26" rx="4" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+      slots += `<text x="${x}" y="${slotsY + 17}" font-size="10" font-weight="800" fill="${textFill}" text-anchor="middle" font-family="-apple-system, sans-serif">${m}×</text>`;
+    }
+
+    // шарик
+    let ballHtml = "";
+    if (ball) {
+      ballHtml = `<circle cx="${ball.x}" cy="${ball.y}" r="6" fill="#fbbf24" stroke="#fff" stroke-width="2" style="filter:drop-shadow(0 0 8px rgba(251,191,36,.8))"/>`;
+    }
+
+    return { svg: `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block">${pegs}${slots}${ballHtml}</svg>`,
+             W, H, paddingTop, pegGapY, stepX };
   }
+
+  function pegCoords(rowIdx, colIdx, geo) {
+    return {
+      x: geo.W/2 + (colIdx - rowIdx/2) * geo.stepX,
+      y: geo.paddingTop + rowIdx * geo.pegGapY,
+    };
+  }
+  function slotCoords(slotIdx, geo) {
+    const slotsY = geo.paddingTop + rows * geo.pegGapY + 22 + 13;
+    return {
+      x: geo.W/2 + (slotIdx - rows/2) * geo.stepX,
+      y: slotsY,
+    };
+  }
+
   function drawAll() {
+    const mults = cfg.payouts.plinko[rows] || [];
+    const geo = buildSVG(mults, rows, lastSlot, ballPos);
     body.innerHTML = `
       <div class="flex flex-col h-full gap-3">
         <div class="flex items-center gap-2">
           <span class="text-xs font-bold" style="color:var(--muted);">РЯДЫ:</span>
           ${[8,12,16].map(n=>`<button class="plinko-rows quick-btn ${n===rows?'selected':''}" data-n="${n}">${n}</button>`).join("")}
         </div>
-        ${drawBoard()}
+        <div id="plinko-container" class="rounded-2xl p-3" style="background:var(--surface); border:1px solid var(--border);">
+          ${geo.svg}
+        </div>
         <div id="plinko-message" class="text-center text-sm" style="color:var(--muted);">Ставь и бросай</div>
         ${betInputRow("plinko-bet", 0.5)}
         <button id="plinko-drop" class="submit">Бросить</button>
@@ -1415,39 +1451,77 @@ function renderPlinko() {
     const betEl = () => body.querySelector("#plinko-bet");
     wireBet(body, betEl);
     body.querySelectorAll(".plinko-rows").forEach(b => b.onclick = () => {
-      rows = Number(b.dataset.n); lastSlot = null; drawAll();
+      if (busy) return;
+      rows = Number(b.dataset.n); lastSlot = null; ballPos = null; drawAll();
     });
-    body.querySelector("#plinko-drop").onclick = async () => {
-      const bet = Number(betEl().value);
-      if (!validateBet(bet)) return;
-      haptic("medium");
-      const btn = body.querySelector("#plinko-drop");
-      btn.disabled = true;
-      body.querySelector("#plinko-result").innerHTML = "";
-      try {
-        const r = await api("/api/games/plinko/drop", { method:"POST", body: JSON.stringify({ bet, rows }) });
-        lastSlot = r.slot;
-        const m = body.querySelector("#plinko-message");
-        let step = 0;
-        const interval = setInterval(() => {
-          step++;
-          m.innerHTML = `Шарик падает… ${step}/${rows}`;
-          if (step >= rows) clearInterval(interval);
-        }, 120);
-        await new Promise(res => setTimeout(res, rows * 120 + 300));
-        const board = body.querySelector(".rounded-2xl");
-        const tmp = document.createElement("div");
-        tmp.innerHTML = drawBoard();
-        board.replaceWith(tmp.firstElementChild);
-        m.innerHTML = `Упал в слот <b>${r.slot}</b> — ×${r.mult}`;
-        const res = body.querySelector("#plinko-result");
-        if (r.profit > 0) res.innerHTML = `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)}</span>`;
-        else res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${Math.abs(num(r.profit)).toFixed(2)}</span>`;
-        updateBalance(num(profile.balance) + num(r.payout));
-        btn.disabled = false;
-      } catch (e) { toast(e.message); btn.disabled = false; }
-    };
+    body.querySelector("#plinko-drop").onclick = onDrop;
   }
+
+  async function onDrop() {
+    if (busy) return;
+    const bet = Number(body.querySelector("#plinko-bet").value);
+    if (!validateBet(bet)) return;
+    busy = true;
+    haptic("medium");
+    const btn = body.querySelector("#plinko-drop");
+    btn.disabled = true;
+    body.querySelector("#plinko-result").innerHTML = "";
+    const mults = cfg.payouts.plinko[rows] || [];
+    const geo = buildSVG(mults, rows, null, null);
+
+    // стартовое положение шарика
+    let curRow = -1;
+    let curCol = 0;
+    ballPos = { x: geo.W/2, y: geo.paddingTop - 14 };
+    lastSlot = null;
+    drawAll();
+
+    try {
+      const r = await api("/api/games/plinko/drop", { method:"POST", body: JSON.stringify({ bet, rows }) });
+      const path = r.path || [];
+      const mults2 = cfg.payouts.plinko[r.rows] || mults;
+      const geo2 = buildSVG(mults2, r.rows, null, null);
+
+      const m = body.querySelector("#plinko-message");
+      m.innerHTML = "Шарик падает…";
+
+      // идём по шагам
+      let colAcc = 0;
+      for (let i = 0; i < r.rows; i++) {
+        colAcc += path[i];
+        const pos = pegCoords(i + 1, colAcc, geo2);
+        ballPos = pos;
+        // красный svg с шаром
+        const container = body.querySelector("#plinko-container");
+        const built = buildSVG(mults2, r.rows, null, ballPos);
+        container.innerHTML = built.svg;
+        haptic("light");
+        await new Promise(res => setTimeout(res, 110));
+      }
+
+      // упал в слот
+      lastSlot = r.slot;
+      const slotPos = slotCoords(r.slot, geo2);
+      ballPos = slotPos;
+      const container2 = body.querySelector("#plinko-container");
+      const built2 = buildSVG(mults2, r.rows, lastSlot, ballPos);
+      container2.innerHTML = built2.svg;
+
+      m.innerHTML = `Упал в слот <b>${r.slot}</b> — <b>×${r.mult}</b>`;
+
+      const res = body.querySelector("#plinko-result");
+      if (r.profit > 0) res.innerHTML = `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)}</span>`;
+      else if (r.profit < 0) res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${Math.abs(num(r.profit)).toFixed(2)}</span>`;
+      else res.innerHTML = `<span style="color:var(--muted);">Возврат</span>`;
+      updateBalance(num(profile.balance) + num(r.payout));
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      busy = false;
+      btn.disabled = false;
+    }
+  }
+
   drawAll();
 }
 
@@ -1463,8 +1537,8 @@ function renderBlackjack() {
   const body = document.getElementById("game-body");
   function drawGame(state) {
     const inGame = state && !state.finished;
-    const playerCards = state ? state.player : [];
-    const dealerCards = state ? state.dealer : [];
+    const playerCards = state && Array.isArray(state.player) ? state.player : [];
+    const dealerCards = state && Array.isArray(state.dealer) ? state.dealer : [];
     const hideDealer = inGame;
     body.innerHTML = `
       <div class="flex flex-col h-full gap-3">
