@@ -74,11 +74,11 @@ async def sb_rpc(name, params):
     return await asyncio.to_thread(lambda: supabase.rpc(name, params).execute())
 
 
-# =================== xRocket HTTP (правильные пути и payload) ===================
+# =================== xRocket Pay API ===================
 async def xrocket_request(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{XROCKET_API_BASE}{path}"
     headers = {
-        "Rocket-Pay-Key": XROCKET_API_KEY,
+        "Authorization": f"Bearer {XROCKET_API_KEY}",
         "Content-Type": "application/json",
     }
     async with httpx.AsyncClient(timeout=30) as http:
@@ -89,8 +89,7 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
             data = {"raw": r.text}
         if r.status_code not in (200, 201):
             log.error("xRocket %s %s -> %s %s", method, path, r.status_code, data)
-            # вытащим текст ошибки
-            msg = data.get("message") or data.get("error") or data.get("detail") or f"HTTP {r.status_code}"
+            msg = data.get("message") or data.get("detail") or data.get("error") or f"HTTP {r.status_code}"
             if isinstance(msg, dict):
                 msg = json.dumps(msg, ensure_ascii=False)
             raise Exception(f"{msg}")
@@ -98,35 +97,35 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
 
 
 async def xrocket_create_invoice(amount: float, description: str, req_id: str) -> dict:
-    """Создать счёт на пополнение. Возвращает {id, link, raw}."""
+    """Создать счёт на пополнение (Pay API)."""
     payload = {
         "amount": str(amount),
         "currency": "USDT",
         "description": description,
-        "hiddenMessage": "",
-        "callbackUrl": "",
-        "payload": req_id,
+        "numPayments": 1,
+        "minPayment": 0,
+        "clientInvoiceId": req_id,
     }
-    data = await xrocket_request("POST", "/app/api/v1/invoices", payload)
-    link = (data.get("link") or data.get("url") or data.get("invoiceUrl")
-            or (data.get("data") or {}).get("link"))
-    inv_id = data.get("id") or data.get("invoiceId") or (data.get("data") or {}).get("id")
+    data = await xrocket_request("POST", "/api/v1/invoices", payload)
+    link = data.get("link") or data.get("url") or data.get("invoiceUrl")
+    inv_id = data.get("id") or data.get("invoiceId")
     if not link:
         raise Exception(f"xRocket не вернул ссылку: {data}")
     return {"id": inv_id, "link": link, "raw": data}
 
 
 async def xrocket_create_payout(user_id: int, amount: float, comment: str, req_id: str) -> dict:
-    """Создать выплату. Возвращает {id, raw}."""
+    """Создать выплату (Pay API)."""
     payload = {
-        "userId": str(user_id),
-        "currency": "USDT",
+        "clientPayoutId": req_id,
+        "target": str(user_id),
+        "targetType": "telegram_user_id",
+        "asset": "USDT",
         "amount": str(amount),
-        "comment": comment,
-        "requestId": req_id,
+        "description": comment,
     }
-    data = await xrocket_request("POST", "/app/api/v1/payouts", payload)
-    payout_id = data.get("id") or data.get("payoutId") or (data.get("data") or {}).get("id")
+    data = await xrocket_request("POST", "/api/v1/payouts", payload)
+    payout_id = data.get("payoutId") or data.get("id")
     return {"id": payout_id, "raw": data}
 
 
@@ -643,7 +642,6 @@ async def cmd_deposit(message: Message, command: CommandObject):
 
 @dp.message(Command("withdraw"))
 async def cmd_withdraw(message: Message, command: CommandObject):
-    """Прямая команда: /withdraw 5"""
     p = await get_or_create_profile(message.from_user.model_dump())
     if not command.args:
         return await cb_withdraw_dispatch(message, p)
@@ -692,7 +690,6 @@ def deposit_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def withdraw_kb(balance):
-    # кнопки быстрых сумм — только те, что не превышают баланс и >= MIN_WITHDRAW
     candidates = [1, 5, 10, 25, 50, 100, 250, 500]
     amounts = [a for a in candidates if a <= balance and a >= MIN_WITHDRAW]
     rows = []
