@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>GoldCash</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #0f0f1e; -webkit-tap-highlight-color: transparent; }
+    .glass { background: rgba(255,255,255,0.06); backdrop-filter: blur(12px); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .grad { background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%); }
+    .grad-pink { background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); }
+    @keyframes pulse-slow { 0%,100% { opacity: 1 } 50% { opacity: .7 } }
+    .pulse-slow { animation: pulse-slow 2s ease-in-out infinite; }
+  </style>
+</head>
+<body class="text-white min-h-screen">
+
+  <!-- TOP BAR -->
+  <header class="fixed top-0 left-0 right-0 z-40 glass border-b border-white/5">
+    <div class="flex items-center justify-between px-4 py-3">
+      <div class="font-black text-lg tracking-tight">Gold<span class="text-yellow-400">Cash</span></div>
+      <div class="flex items-center gap-2">
+        <div class="glass rounded-full px-3 py-1.5 flex items-center gap-1.5 text-sm">
+          <span class="text-yellow-400">₮</span>
+          <span id="balance" class="font-bold">0.00</span>
+        </div>
+        <button id="btn-deposit" class="grad rounded-full px-3 py-1.5 text-sm font-semibold">
+          Пополнить
+        </button>
+        <div id="avatar" class="w-8 h-8 rounded-full grad-pink flex items-center justify-center text-xs font-bold">
+          ?
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="pt-16 pb-24 px-4">
+
+    <!-- BANNER -->
+    <section class="mt-2">
+      <div id="banners" class="flex overflow-x-auto no-scrollbar gap-3 snap-x snap-mandatory"></div>
+      <div id="dots" class="flex justify-center gap-1.5 mt-2"></div>
+    </section>
+
+    <!-- LIVE -->
+    <section class="mt-6">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="w-2 h-2 rounded-full bg-red-500 pulse-slow"></span>
+        <span class="text-sm font-bold uppercase tracking-wide text-gray-300">Live</span>
+      </div>
+      <div id="live" class="flex overflow-x-auto no-scrollbar gap-3"></div>
+    </section>
+
+    <!-- GAMES -->
+    <section class="mt-6">
+      <h2 class="text-xl font-black mb-3">Игры</h2>
+      <div id="games" class="flex flex-col gap-4"></div>
+    </section>
+
+  </main>
+
+  <!-- BOTTOM NAV -->
+  <nav class="fixed bottom-0 left-0 right-0 z-40 glass border-t border-white/5">
+    <div class="grid grid-cols-2 py-2">
+      <button class="flex flex-col items-center gap-1 text-yellow-400">
+        <span class="text-lg">🎮</span>
+        <span class="text-[10px] font-semibold">Игры</span>
+      </button>
+      <button id="btn-withdraw-nav" class="flex flex-col items-center gap-1 text-gray-400">
+        <span class="text-lg">💸</span>
+        <span class="text-[10px] font-semibold">Вывести</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- MODAL: DEPOSIT -->
+  <div id="modal-deposit" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
+    <div class="w-full glass rounded-t-3xl p-5 pb-8">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-xl font-black">Пополнение</h3>
+        <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
+      </div>
+      <label class="text-sm text-gray-400">Сумма (USDT)</label>
+      <input id="deposit-amount" type="number" inputmode="decimal" min="1" step="0.01"
+        class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500"
+        placeholder="10">
+      <div class="flex gap-2 mb-4">
+        <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="5">5</button>
+        <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="10">10</button>
+        <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="25">25</button>
+        <button class="deposit-quick flex-1 glass rounded-xl py-2 text-sm font-semibold" data-v="50">50</button>
+      </div>
+      <button id="do-deposit" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Оплатить</button>
+    </div>
+  </div>
+
+  <!-- MODAL: WITHDRAW -->
+  <div id="modal-withdraw" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
+    <div class="w-full glass rounded-t-3xl p-5 pb-8">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-xl font-black">Вывод</h3>
+        <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
+      </div>
+      <label class="text-sm text-gray-400">Сумма (USDT)</label>
+      <input id="withdraw-amount" type="number" inputmode="decimal" min="1" step="0.01"
+        class="w-full mt-1 mb-3 bg-white/5 rounded-2xl px-4 py-3 text-lg outline-none border border-white/10 focus:border-purple-500"
+        placeholder="10">
+      <p class="text-xs text-gray-500 mb-4">Выплата приходит мгновенно на ваш аккаунт xRocket.</p>
+      <button id="do-withdraw" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Вывести</button>
+    </div>
+  </div>
+
+  <!-- MODAL: GAME -->
+  <div id="modal-game" class="fixed inset-0 z-50 hidden bg-black/90 flex-col">
+    <div class="flex items-center justify-between p-4">
+      <h3 id="game-title" class="text-xl font-black">Игра</h3>
+      <button class="close-modal text-gray-400 text-3xl leading-none">×</button>
+    </div>
+    <div class="flex-1 flex items-center justify-center text-gray-500 px-6 text-center">
+      <div>
+        <p class="text-3xl mb-3">🚧</p>
+        <p id="game-soon">Игра в разработке. Скоро здесь будет полноценный геймплей.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="fixed top-20 left-1/2 -translate-x-1/2 z-[60] hidden glass px-4 py-2 rounded-xl text-sm"></div>
+
+  <script>
+    const API_URL = "https://goldcash-production-aeda.up.railway.app";
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    // ---------- state ----------
+    let profile = null;
+
+    // ---------- helpers ----------
+    function toast(msg, ms = 2500) {
+      const t = document.getElementById("toast");
+      t.innerText = msg;
+      t.classList.remove("hidden");
+      clearTimeout(t._t);
+      t._t = setTimeout(() => t.classList.add("hidden"), ms);
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(`${API_URL}${path}`, {
+        ...opts,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Init-Data": tg.initData,
+          ...(opts.headers || {}),
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // ---------- init ----------
+    async function init() {
+      try {
+        profile = await api("/api/profile", { method: "GET" });
+        renderProfile();
+      } catch (e) {
+        toast("Ошибка авторизации: " + e.message);
+      }
+    }
+
+    function renderProfile() {
+      document.getElementById("balance").innerText = Number(profile.balance).toFixed(2);
+      const name = (profile.first_name || profile.username || "?").trim();
+      document.getElementById("avatar").innerText = name[0].toUpperCase();
+    }
+
+    // ---------- banners ----------
+    const banners = [
+      { title: "Розыгрыш 500 NFT", sub: "Призы на 1 900 000 ₽", bg: "linear-gradient(135deg,#8b5cf6,#ec4899)" },
+      { title: "Бонус на депозит", sub: "+50% к первому пополнению", bg: "linear-gradient(135deg,#3b82f6,#06b6d4)" },
+      { title: "Турнир по Crash", sub: "Призовой фонд 10 000 USDT", bg: "linear-gradient(135deg,#f59e0b,#ef4444)" },
+    ];
+    function renderBanners() {
+      const wrap = document.getElementById("banners");
+      const dots = document.getElementById("dots");
+      wrap.innerHTML = banners.map((b, i) => `
+        <div class="snap-center shrink-0 w-[88%] rounded-3xl p-5 h-40 flex flex-col justify-end"
+             style="background:${b.bg}">
+          <div class="text-xs uppercase tracking-wider opacity-80">До конца 58 д 5 ч</div>
+          <div class="text-2xl font-black leading-tight mt-1">${b.title}</div>
+          <div class="text-sm opacity-90 mt-1">${b.sub}</div>
+        </div>
+      `).join("");
+      dots.innerHTML = banners.map((_, i) =>
+        `<span class="w-1.5 h-1.5 rounded-full ${i===0?'bg-white':'bg-white/30'}"></span>`
+      ).join("");
+    }
+
+    // ---------- live ----------
+    const live = [
+      { name: "ak", amount: "2 564 ₮", color: "from-pink-500 to-rose-500" },
+      { name: "Erop", amount: "2 602 ₮", color: "from-purple-500 to-indigo-500" },
+      { name: "1", amount: "3 400 ₮", color: "from-blue-500 to-cyan-500" },
+      { name: "Max", amount: "980 ₮", color: "from-amber-500 to-orange-500" },
+    ];
+    function renderLive() {
+      const wrap = document.getElementById("live");
+      wrap.innerHTML = live.map(l => `
+        <div class="shrink-0 glass rounded-2xl px-3 py-2 flex items-center gap-2 min-w-[140px]">
+          <div class="w-8 h-8 rounded-full bg-gradient-to-br ${l.color} flex items-center justify-center text-xs font-bold">
+            ${l.name[0].toUpperCase()}
+          </div>
+          <div class="leading-tight">
+            <div class="text-xs text-gray-400">${l.name}</div>
+            <div class="text-sm font-bold text-green-400">+${l.amount}</div>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    // ---------- games ----------
+    const games = [
+      { id: "crash",    title: "Crash",    players: 1247, img: "https://placehold.co/600x300/1a1a2e/ffffff?text=CRASH" },
+      { id: "mines",    title: "Mines",    players: 892,  img: "https://placehold.co/600x300/1a1a2e/ffffff?text=MINES" },
+      { id: "roulette", title: "Roulette", players: 3105, img: "https://placehold.co/600x300/1a1a2e/ffffff?text=ROULETTE" },
+    ];
+    function renderGames() {
+      const wrap = document.getElementById("games");
+      wrap.innerHTML = games.map(g => `
+        <button class="game-card text-left rounded-3xl overflow-hidden relative" data-id="${g.id}" data-title="${g.title}">
+          <img src="${g.img}" alt="${g.title}" class="w-full h-40 object-cover opacity-90">
+          <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent"></div>
+          <div class="absolute top-3 left-3 glass rounded-full px-2.5 py-1 flex items-center gap-1 text-xs">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>
+            ${g.players.toLocaleString('ru-RU')} играют
+          </div>
+          <div class="absolute bottom-3 left-3 right-3 flex items-end justify-between">
+            <div class="text-2xl font-black">${g.title}</div>
+            <div class="grad rounded-full px-4 py-1.5 text-sm font-bold">Играть</div>
+          </div>
+        </button>
+      `).join("");
+    }
+
+    // ---------- modals ----------
+    function open(id) {
+      const m = document.getElementById(id);
+      m.classList.remove("hidden");
+      m.classList.add("flex");
+    }
+    function close(id) {
+      const m = document.getElementById(id);
+      m.classList.add("hidden");
+      m.classList.remove("flex");
+    }
+    document.querySelectorAll(".close-modal").forEach(b => {
+      b.addEventListener("click", (e) => {
+        e.target.closest(".fixed").classList.add("hidden");
+        e.target.closest(".fixed").classList.remove("flex");
+      });
+    });
+
+    // ---------- deposit ----------
+    document.getElementById("btn-deposit").addEventListener("click", () => open("modal-deposit"));
+    document.querySelectorAll(".deposit-quick").forEach(b => {
+      b.addEventListener("click", () => {
+        document.getElementById("deposit-amount").value = b.dataset.v;
+      });
+    });
+    document.getElementById("do-deposit").addEventListener("click", async () => {
+      const amount = Number(document.getElementById("deposit-amount").value);
+      if (!amount || amount < 1) return toast("Минимум 1 USDT");
+      try {
+        const r = await api("/api/payments/deposit", {
+          method: "POST",
+          body: JSON.stringify({ amount }),
+        });
+        tg.openLink(r.link);
+        close("modal-deposit");
+        toast("Открываем оплату…");
+      } catch (e) {
+        toast("Ошибка: " + e.message);
+      }
+    });
+
+    // ---------- withdraw ----------
+    document.getElementById("btn-withdraw-nav").addEventListener("click", () => open("modal-withdraw"));
+    document.getElementById("do-withdraw").addEventListener("click", async () => {
+      const amount = Number(document.getElementById("withdraw-amount").value);
+      if (!amount || amount < 1) return toast("Минимум 1 USDT");
+      if (amount > Number(profile.balance)) return toast("Недостаточно средств");
+      try {
+        const r = await api("/api/payments/withdraw", {
+          method: "POST",
+          body: JSON.stringify({ amount }),
+        });
+        close("modal-withdraw");
+        toast("Выплата отправлена");
+        profile.balance = Number(profile.balance) - amount;
+        renderProfile();
+      } catch (e) {
+        toast("Ошибка: " + e.message);
+      }
+    });
+
+    // ---------- game open ----------
+    document.addEventListener("click", (e) => {
+      const card = e.target.closest(".game-card");
+      if (card) {
+        document.getElementById("game-title").innerText = card.dataset.title;
+        open("modal-game");
+      }
+    });
+
+    // ---------- polling ----------
+    async function pollBalance() {
+      try {
+        const p = await api("/api/profile");
+        profile = p;
+        renderProfile();
+      } catch {}
+    }
+    setInterval(pollBalance, 5000);
+
+    // ---------- boot ----------
+    renderBanners();
+    renderLive();
+    renderGames();
+    init();
+  </script>
+</body>
+</html>
