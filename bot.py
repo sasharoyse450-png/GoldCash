@@ -52,6 +52,16 @@ CRASH_COOLDOWN_SEC = 4
 MAINTENANCE = False
 START_TIME = time.time()
 
+# ---- ВКЛ/ВЫКЛ ИГР ----
+GAMES_ENABLED = {
+    "crash": True, "mines": True, "roulette": True, "dice": True,
+    "plinko": True, "blackjack": True, "tower": True,
+}
+
+def ensure_game_enabled(game: str):
+    if not GAMES_ENABLED.get(game, True):
+        raise HTTPException(503, f"игра {game} временно отключена")
+
 PLINKO_MULTS = {
     8:  [5.6, 2.1, 1.1, 1.0, 0.5, 1.0, 1.1, 2.1, 5.6],
     12: [10, 3, 1.6, 1.4, 1.1, 1.0, 0.5, 1.0, 1.1, 1.4, 1.6, 3, 10],
@@ -102,6 +112,7 @@ async def ensure_not_banned(profile):
         raise HTTPException(403, f"аккаунт заблокирован: {reason}")
 
 
+# =================== xRocket ===================
 async def xrocket_request(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{XROCKET_API_BASE}{path}"
     headers = {"Authorization": f"Bearer {XROCKET_API_KEY}", "Content-Type": "application/json"}
@@ -121,7 +132,7 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
 
 async def xrocket_create_invoice(amount, description, req_id, currency="USDT"):
     payload = {"amount": float(amount), "asset": currency, "description": description,
-               "payload": req_id, "hiddenMessage": ""}
+               "payload": req_id}
     data = await xrocket_request("POST", "/api/v1/invoices", payload)
     link = data.get("link") or data.get("url") or data.get("invoiceUrl")
     inv_id = data.get("id") or data.get("invoiceId")
@@ -130,14 +141,14 @@ async def xrocket_create_invoice(amount, description, req_id, currency="USDT"):
 
 
 async def xrocket_create_payout(user_id, amount, comment, req_id, currency="USDT"):
-    payload = {"target": str(user_id), "targetType": "telegram_user_id",
-               "asset": currency, "amount": float(amount),
-               "description": comment, "payload": req_id}
+    payload = {"target": str(user_id), "asset": currency,
+               "amount": float(amount), "description": comment, "payload": req_id}
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
     payout_id = data.get("payoutId") or data.get("id")
     return {"id": payout_id, "raw": data}
 
 
+# =================== math / PF ===================
 def pf_rand(ss, cs, n):
     h = hmac.new(ss.encode(), f"{cs}:{n}".encode(), hashlib.sha256).hexdigest()
     return int(h[:13], 16) / float(0xFFFFFFFFFFFFF)
@@ -213,6 +224,7 @@ def bj_value(cards):
     return total
 
 
+# =================== auth ===================
 def validate_init_data(init_data, bot_token):
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -442,7 +454,6 @@ def fmt_stats(s, balance, first_name):
 def admin_only(message: Message) -> bool:
     return message.from_user and is_admin(message.from_user.id)
 
-
 async def admin_get_user(message: Message, arg: str):
     arg = (arg or "").strip()
     if not arg: return None
@@ -461,38 +472,82 @@ async def cmd_ahelp(message: Message):
     await message.answer(
         "<b>🛠 АДМИН-КОМАНДЫ</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>👤 Юзеры</b>\n"
-        "/auser id · /afind @username\n"
-        "/agive id sum · /atake id sum · /asetbal id sum\n"
-        "/aban id [reason] · /aunban id · /abanlist\n"
-        "/anote id текст · /anotes id\n"
-        "/aresetnonce id · /aresetserver id\n"
+        "<b>🎮 Управление играми</b>\n"
+        "/astatus — какие игры вкл/выкл\n"
+        "/aon GAME — включить игру\n"
+        "/aoff GAME — выключить игру\n"
+        "/aonall — включить все игры\n"
+        "/aoffall — выключить все игры\n"
+        "Игры: crash, mines, roulette, dice, plinko, blackjack, tower\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>🎮 Игры</b>\n"
-        "/aendgame id [lose]\n"
-        "/aendgameall · /aactive id · /aactivelist · /acleargames\n"
+        "<b>🎮 Активные игры юзеров</b>\n"
+        "/aendgame ID [lose] — завершить игру (с возвратом / без)\n"
+        "/aendgameall — завершить все игры с возвратом\n"
+        "/aactive ID — показать активную игру\n"
+        "/aactivelist — все активные игры\n"
+        "/acleargames — очистить все (без возврата)\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>👤 Юзеры</b>\n"
+        "/auser ID — подробная инфо\n"
+        "/afind @username — поиск по нику\n"
+        "/awhois ID — быстрая справка\n"
+        "/agive ID SUM — начислить\n"
+        "/atake ID SUM — списать\n"
+        "/asetbal ID SUM — установить баланс\n"
+        "/aban ID [reason] — забанить\n"
+        "/aunban ID — разбанить\n"
+        "/abanlist — список забаненных\n"
+        "/apause ID — пауза (блокирует ставки)\n"
+        "/aunpause ID — снять паузу\n"
+        "/anote ID TXT — заметка о юзере\n"
+        "/anotes ID — показать заметки\n"
+        "/aresetnonce ID — сбросить nonce\n"
+        "/aresetserver ID — новый client_seed\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📊 Статистика</b>\n"
-        "/astats · /aggr · /abalances\n"
-        "/adaily · /aweekly · /agames\n"
-        "/atop · /atopdep · /atopwd · /arp\n"
+        "/astats — глобальная\n"
+        "/aggr — GGR и реальный RTP\n"
+        "/abalances — сумма всех балансов\n"
+        "/aonline — юзеров за 5 мин\n"
+        "/arich — топ-15 по балансу\n"
+        "/adaily — за 24 часа\n"
+        "/aweekly — за 7 дней\n"
+        "/agames — детально по играм\n"
+        "/atop — топ профита за 30д\n"
+        "/atopdep — топ депозитов\n"
+        "/atopwd — топ выводов\n"
+        "/arp — RTP каждой игры\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>💸 Транзакции</b>\n"
-        "/atx id · /atxlast n · /arefund tx_id\n"
+        "/atx ID — последние транзы юзера\n"
+        "/atxlast N — последние N в системе\n"
+        "/arefund TX_ID — вернуть транзакцию\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎟 Промо</b>\n"
-        "/anewpromo CODE SUM [MAX] · /alistpromos · /adelpromo CODE · /apromoinfo CODE\n"
+        "/anewpromo CODE SUM [MAX] — создать\n"
+        "/alistpromos — список\n"
+        "/adelpromo CODE — удалить\n"
+        "/adelallpromos — удалить все\n"
+        "/apromoinfo CODE — кто активировал\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📢 Сообщения</b>\n"
-        "/abroadcast текст · /apush id текст\n"
+        "/abroadcast TXT — всем\n"
+        "/apush ID TXT — одному\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>⚙️ Настройки</b>\n"
-        "/asettings · /asetminbet v · /asetmaxbet v\n"
-        "/asetmindep v · /asetminwd v · /asetmaxwd v\n"
-        "/asetrtp v · /amaintenance on|off\n"
+        "/asettings — текущие значения\n"
+        "/asetrtp 0.96 — RTP (0.90-0.99)\n"
+        "/asetminbet V · /asetmaxbet V\n"
+        "/asetmindep V · /asetminwd V · /asetmaxwd V\n"
+        "/asetref 0.05 — реф-процент\n"
+        "/asetcooldown MIN — кулдаун выводов\n"
+        "/amaintenance on|off — блок ставок\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🩺 Система</b>\n"
-        "/ahealth · /alogs n · /aadmins",
+        "/ahealth — статус сервисов\n"
+        "/alogs N — последние N логов\n"
+        "/aclearlogs N — очистить старые логи\n"
+        "/aadmins — список админов\n",
         parse_mode="HTML")
 
 
@@ -500,49 +555,143 @@ async def cmd_ahelp(message: Message):
 async def cmd_admin(message: Message):
     if not admin_only(message): return
     await message.answer(
-        f"🏦 <b>Админ-панель</b>\nRTP {100-HOUSE_EDGE*100:.0f}% · HE {HOUSE_EDGE*100:.1f}%\n"
-        f"Мин ставка {MIN_BET} · макс {MAX_BET}\nМин деп {MIN_DEPOSIT} · мин вывод {MIN_WITHDRAW}\n"
-        f"Лимит/сутки {MAX_WITHDRAW_DAILY}\nКулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
+        f"🏦 <b>Админ-панель</b>\n"
+        f"RTP {100-HOUSE_EDGE*100:.0f}% · HE {HOUSE_EDGE*100:.1f}%\n"
+        f"Мин ставка {MIN_BET} · макс {MAX_BET}\n"
+        f"Мин деп {MIN_DEPOSIT} · мин вывод {MIN_WITHDRAW}\n"
+        f"Лимит/сутки {MAX_WITHDRAW_DAILY}\n"
+        f"Кулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
         f"Рефералка {REFERRAL_SHARE*100:.0f}%\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
+        f"Игры вкл: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "Все команды: /ahelp",
         parse_mode="HTML")
 
 
-@dp.message(Command("arp"))
-async def cmd_arp(message: Message):
+# ---- Управление играми ----
+@dp.message(Command("astatus"))
+async def cmd_astatus(message: Message):
     if not admin_only(message): return
+    lines = []
+    for k, v in GAMES_ENABLED.items():
+        lines.append(f"{'✅' if v else '⛔'} <code>{k}</code>")
+    await message.answer("<b>🎮 Статус игр</b>\n" + "\n".join(lines), parse_mode="HTML")
+
+@dp.message(Command("aon"))
+async def cmd_aon(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args:
+        return await message.answer(f"/aon <game>\nДоступно: {', '.join(GAMES_ENABLED.keys())}")
+    g = command.args.strip().lower()
+    if g not in GAMES_ENABLED: return await message.answer(f"❌ Нет игры {g}")
+    GAMES_ENABLED[g] = True
+    await message.answer(f"✅ Игра <b>{g}</b> включена", parse_mode="HTML")
+
+@dp.message(Command("aoff"))
+async def cmd_aoff(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args:
+        return await message.answer(f"/aoff <game>\nДоступно: {', '.join(GAMES_ENABLED.keys())}")
+    g = command.args.strip().lower()
+    if g not in GAMES_ENABLED: return await message.answer(f"❌ Нет игры {g}")
+    GAMES_ENABLED[g] = False
+    await message.answer(f"⛔ Игра <b>{g}</b> выключена", parse_mode="HTML")
+
+@dp.message(Command("aonall"))
+async def cmd_aonall(message: Message):
+    if not admin_only(message): return
+    for g in GAMES_ENABLED: GAMES_ENABLED[g] = True
+    await message.answer("✅ Все игры включены")
+
+@dp.message(Command("aoffall"))
+async def cmd_aoffall(message: Message):
+    if not admin_only(message): return
+    for g in GAMES_ENABLED: GAMES_ENABLED[g] = False
+    await message.answer("⛔ Все игры выключены")
+
+
+# ---- Активные игры юзеров ----
+@dp.message(Command("aendgame"))
+async def cmd_aendgame(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args:
+        return await message.answer("/aendgame <id|@username> [lose]\nБез lose — ставка возвращается.")
+    parts = command.args.split()
+    p = await admin_get_user(message, parts[0])
+    if not p: return await message.answer("Юзер не найден")
+    mode = parts[1].lower() if len(parts) > 1 else "refund"
+    ar = await get_active_round(p["id"])
+    if not ar:
+        return await message.answer(f"У <code>{p['telegram_id']}</code> нет активной игры", parse_mode="HTML")
+    game = ar["game_type"]; bet = float(ar["bet_amount"])
+    if mode != "lose":
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "admin", "amount": bet, "currency": "USDT",
+            "status": "completed",
+            "meta": {"by": message.from_user.id, "action": "endgame_refund", "game": game}}))
+    await clear_active_round(p["id"])
+    await log_round(p["id"], game, bet, {"admin_end": True, "mode": mode},
+                    0 if mode != "lose" else -bet, "", 0)
     await message.answer(
-        f"📊 RTP: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
-        f"🎲 Кубик ×{DICE_PAYOUT} — {DICE_PAYOUT/6*100:.2f}%\n"
-        f"💥 Crash — {(1-HOUSE_EDGE)*100:.2f}%\n💎 Mines — {(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🎡 Рулетка RB ×{ROUL_RB_PAYOUT}, дюжина ×{ROUL_DOZEN_PAYOUT}, число ×{ROUL_NUM_PAYOUT}\n"
-        f"🃏 Blackjack — ~{(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🎰 Plinko — ~{(1-HOUSE_EDGE)*100:.2f}%\n🗼 Tower — ~{(1-HOUSE_EDGE)*100:.2f}%",
+        f"✅ Игра <b>{game}</b> завершена.\nРежим: {'возврат' if mode != 'lose' else 'без возврата'}\nСтавка: {bet:.2f}",
         parse_mode="HTML")
 
-
-@dp.message(Command("astats"))
-async def cmd_astats(message: Message):
+@dp.message(Command("aendgameall"))
+async def cmd_aendgameall(message: Message):
     if not admin_only(message): return
-    try:
-        users = (await sb(supabase.table("profiles").select("id, balance"))).data or []
-        tx = (await sb(supabase.table("transactions").select("type, amount, status"))).data or []
-        rounds = (await sb(supabase.table("game_rounds").select("bet_amount, profit, game_type"))).data or []
-        dep = sum(float(t["amount"]) for t in tx if t["type"] == "deposit" and t["status"] == "completed")
-        wd = sum(float(t["amount"]) for t in tx if t["type"] == "withdraw" and t["status"] == "completed")
-        total_bets = sum(float(r["bet_amount"]) for r in rounds)
-        ggr = -sum(float(r["profit"]) for r in rounds)
-        await message.answer(
-            f"👥 Юзеров: <b>{len(users)}</b>\n💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f}</b>\n"
-            f"📥 Депозиты: <b>{dep:.2f}</b>\n📤 Выводы: <b>{wd:.2f}</b>\n"
-            f"🎯 Оборот: <b>{total_bets:.2f}</b>\n📈 GGR: <b>{ggr:+.2f}</b>\n"
-            f"🎮 Игр: {len(rounds)}",
-            parse_mode="HTML")
-    except Exception as e: await message.answer(f"❌ {e}")
+    rounds = (await sb(supabase.table("active_rounds").select("*"))).data or []
+    if not rounds: return await message.answer("Активных игр нет")
+    ok = 0; total = 0.0
+    for ar in rounds:
+        bet = float(ar["bet_amount"]); uid = ar["user_id"]
+        try:
+            await sb_rpc("change_balance", {"p_user_id": uid, "p_delta": bet})
+            await sb(supabase.table("transactions").insert({
+                "user_id": uid, "type": "admin", "amount": bet, "currency": "USDT",
+                "status": "completed",
+                "meta": {"by": message.from_user.id, "action": "endgame_refund_all"}}))
+            await sb(supabase.table("active_rounds").delete().eq("user_id", uid))
+            total += bet; ok += 1
+        except Exception as e: log.exception("aendgameall fail: %s", e)
+    await message.answer(f"✅ Завершено <b>{ok}</b> игр, возвращено <b>{total:.2f}</b>", parse_mode="HTML")
+
+@dp.message(Command("aactive"))
+async def cmd_aactive(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/aactive <id>")
+    p = await admin_get_user(message, command.args)
+    if not p: return await message.answer("Юзер не найден")
+    ar = await get_active_round(p["id"])
+    if not ar: return await message.answer("Нет активной игры")
+    await message.answer(
+        f"<b>🎮 Активная игра</b>\nЮзер: <code>{p['telegram_id']}</code>\n"
+        f"Игра: <b>{ar['game_type']}</b>\nСтавка: {float(ar['bet_amount']):.2f}\n"
+        f"State: <code>{json.dumps(ar.get('state', {}))[:400]}</code>",
+        parse_mode="HTML")
+
+@dp.message(Command("aactivelist"))
+async def cmd_aactivelist(message: Message):
+    if not admin_only(message): return
+    r = await sb(supabase.table("active_rounds").select("*")
+                 .order("started_at", desc=True).limit(30))
+    if not r.data: return await message.answer("Активных игр нет")
+    uids = list(set(x["user_id"] for x in r.data))
+    prof = await sb(supabase.table("profiles").select("id, telegram_id, first_name").in_("id", uids))
+    nm = {p["id"]: (p.get("first_name") or str(p.get("telegram_id"))) for p in prof.data or []}
+    lines = [f"• <b>{nm.get(x['user_id'], '?')}</b> · {x['game_type']} · {float(x['bet_amount']):.2f}"
+             for x in r.data]
+    await message.answer("<b>🎮 Активные:</b>\n" + "\n".join(lines), parse_mode="HTML")
+
+@dp.message(Command("acleargames"))
+async def cmd_acleargames(message: Message):
+    if not admin_only(message): return
+    await sb(supabase.table("active_rounds").delete().neq("user_id", "00000000-0000-0000-0000-000000000000"))
+    await message.answer("✅ Все активные игры удалены (без возврата)")
 
 
+# ---- Юзеры ----
 @dp.message(Command("auser"))
 async def cmd_auser(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -560,7 +709,6 @@ async def cmd_auser(message: Message, command: CommandObject):
         f"🎯 {s['bets']:.2f} · 🏆 {s['wins']:.2f}\n🎮 {s['games']} · 📊 {s['net']:+.2f}",
         parse_mode="HTML")
 
-
 @dp.message(Command("afind"))
 async def cmd_afind(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -575,6 +723,18 @@ async def cmd_afind(message: Message, command: CommandObject):
         f"Игр: {s['games']} · профит: {s['net']:+.2f}",
         parse_mode="HTML")
 
+@dp.message(Command("awhois"))
+async def cmd_awhois(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/awhois <id>")
+    p = await admin_get_user(message, command.args)
+    if not p: return await message.answer("Юзер не найден")
+    ar = await get_active_round(p["id"])
+    extra = f"\n🎮 в игре: <b>{ar['game_type']}</b>" if ar else ""
+    await message.answer(
+        f"👤 {p.get('first_name') or '—'} @{p.get('username') or '—'}\n"
+        f"🆔 <code>{p['telegram_id']}</code>\n💎 {float(p['balance']):.2f}{extra}",
+        parse_mode="HTML")
 
 @dp.message(Command("agive"))
 async def cmd_agive(message: Message, command: CommandObject):
@@ -594,7 +754,6 @@ async def cmd_agive(message: Message, command: CommandObject):
     try: await bot.send_message(p["telegram_id"], f"💎 +<b>{amount}</b>", parse_mode="HTML")
     except: pass
 
-
 @dp.message(Command("atake"))
 async def cmd_atake(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -612,7 +771,6 @@ async def cmd_atake(message: Message, command: CommandObject):
         "status": "completed", "meta": {"by": message.from_user.id, "action": "take"}}))
     await message.answer(f"✅ −<b>{amount}</b> у <code>{p['telegram_id']}</code>", parse_mode="HTML")
 
-
 @dp.message(Command("asetbal"))
 async def cmd_asetbal(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -628,10 +786,8 @@ async def cmd_asetbal(message: Message, command: CommandObject):
     await sb(supabase.table("transactions").insert({
         "user_id": p["id"], "type": "admin", "amount": abs(diff), "currency": "USDT",
         "status": "completed",
-        "meta": {"by": message.from_user.id, "action": "set_balance",
-                 "old": float(p["balance"]), "new": new_bal}}))
+        "meta": {"by": message.from_user.id, "action": "set_balance", "old": float(p["balance"]), "new": new_bal}}))
     await message.answer(f"✅ Баланс {p['telegram_id']} = <b>{new_bal:.2f}</b>", parse_mode="HTML")
-
 
 @dp.message(Command("aban"))
 async def cmd_aban(message: Message, command: CommandObject):
@@ -644,7 +800,6 @@ async def cmd_aban(message: Message, command: CommandObject):
     await sb(supabase.table("profiles").update({"is_banned": True, "ban_reason": reason}).eq("id", p["id"]))
     await message.answer(f"🚫 <code>{p['telegram_id']}</code> забанен: {reason}", parse_mode="HTML")
 
-
 @dp.message(Command("aunban"))
 async def cmd_aunban(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -653,7 +808,6 @@ async def cmd_aunban(message: Message, command: CommandObject):
     if not p: return await message.answer("Юзер не найден")
     await sb(supabase.table("profiles").update({"is_banned": False, "ban_reason": None}).eq("id", p["id"]))
     await message.answer(f"✅ <code>{p['telegram_id']}</code> разбанен", parse_mode="HTML")
-
 
 @dp.message(Command("abanlist"))
 async def cmd_abanlist(message: Message):
@@ -665,6 +819,23 @@ async def cmd_abanlist(message: Message):
              for p in r.data]
     await message.answer("<b>🚫 Забаненные:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
+@dp.message(Command("apause"))
+async def cmd_apause(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/apause <id>")
+    p = await admin_get_user(message, command.args)
+    if not p: return await message.answer("Юзер не найден")
+    await sb(supabase.table("profiles").update({"is_banned": True, "ban_reason": "paused by admin"}).eq("id", p["id"]))
+    await message.answer(f"⏸ <code>{p['telegram_id']}</code> на паузе", parse_mode="HTML")
+
+@dp.message(Command("aunpause"))
+async def cmd_aunpause(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/aunpause <id>")
+    p = await admin_get_user(message, command.args)
+    if not p: return await message.answer("Юзер не найден")
+    await sb(supabase.table("profiles").update({"is_banned": False, "ban_reason": None}).eq("id", p["id"]))
+    await message.answer(f"▶️ <code>{p['telegram_id']}</code> снят с паузы", parse_mode="HTML")
 
 @dp.message(Command("anote"))
 async def cmd_anote(message: Message, command: CommandObject):
@@ -683,7 +854,6 @@ async def cmd_anote(message: Message, command: CommandObject):
         return await message.answer(f"⚠️ Нужна колонка admin_notes jsonb. {e}")
     await message.answer(f"✅ Заметка добавлена для {p['telegram_id']}")
 
-
 @dp.message(Command("anotes"))
 async def cmd_anotes(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -693,8 +863,7 @@ async def cmd_anotes(message: Message, command: CommandObject):
     meta = p.get("admin_notes") or []
     if not meta: return await message.answer("Заметок нет")
     lines = [f"• {n.get('text')} — {n.get('by')} @ {n.get('at','')[:16]}" for n in meta]
-    await message.answer(f"<b>📝 Заметки о {p['telegram_id']}:</b>\n" + "\n".join(lines), parse_mode="HTML")
-
+    await message.answer(f"<b>📝 Заметки:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("aresetnonce"))
 async def cmd_aresetnonce(message: Message, command: CommandObject):
@@ -705,7 +874,6 @@ async def cmd_aresetnonce(message: Message, command: CommandObject):
     await sb(supabase.table("profiles").update({"nonce": 0}).eq("id", p["id"]))
     await message.answer(f"✅ nonce сброшен для {p['telegram_id']}")
 
-
 @dp.message(Command("aresetserver"))
 async def cmd_aresetserver(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -714,107 +882,27 @@ async def cmd_aresetserver(message: Message, command: CommandObject):
     if not p: return await message.answer("Юзер не найден")
     new_seed = os.urandom(16).hex()
     await sb(supabase.table("profiles").update({"client_seed": new_seed}).eq("id", p["id"]))
-    await message.answer(f"✅ Новый client_seed для {p['telegram_id']}:\n<code>{new_seed}</code>", parse_mode="HTML")
+    await message.answer(f"✅ Новый client_seed:\n<code>{new_seed}</code>", parse_mode="HTML")
 
 
-@dp.message(Command("aendgame"))
-async def cmd_aendgame(message: Message, command: CommandObject):
+# ---- Статистика ----
+@dp.message(Command("astats"))
+async def cmd_astats(message: Message):
     if not admin_only(message): return
-    if not command.args:
-        return await message.answer("/aendgame <id|@username> [lose]\n"
-                                     "Без lose — ставка возвращается.\nС lose — без возврата.")
-    parts = command.args.split()
-    p = await admin_get_user(message, parts[0])
-    if not p: return await message.answer("Юзер не найден")
-    mode = parts[1].lower() if len(parts) > 1 else "refund"
-    ar = await get_active_round(p["id"])
-    if not ar:
-        return await message.answer(f"У <code>{p['telegram_id']}</code> нет активной игры", parse_mode="HTML")
-    game = ar["game_type"]; bet = float(ar["bet_amount"])
-    if mode != "lose":
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
-        await sb(supabase.table("transactions").insert({
-            "user_id": p["id"], "type": "admin", "amount": bet, "currency": "USDT",
-            "status": "completed",
-            "meta": {"by": message.from_user.id, "action": "endgame_refund", "game": game}}))
-    await clear_active_round(p["id"])
-    await log_round(p["id"], game, bet, {"admin_end": True, "mode": mode},
-                    0 if mode != "lose" else -bet, "", 0)
-    await message.answer(
-        f"✅ Игра <b>{game}</b> юзера <code>{p['telegram_id']}</code> завершена.\n"
-        f"Режим: {'возврат ставки' if mode != 'lose' else 'без возврата'}\n"
-        f"Ставка: {bet:.2f}", parse_mode="HTML")
     try:
-        await bot.send_message(p["telegram_id"],
-            f"ℹ️ Твоя активная игра была завершена администратором.\n"
-            f"Игра: <b>{game}</b>\nСтавка: {bet:.2f} — "
-            + ("возвращена на баланс" if mode != "lose" else "не возвращена"),
-            parse_mode="HTML")
-    except: pass
-
-
-@dp.message(Command("aendgameall"))
-async def cmd_aendgameall(message: Message):
-    if not admin_only(message): return
-    rounds = (await sb(supabase.table("active_rounds").select("*"))).data or []
-    if not rounds: return await message.answer("Активных игр нет")
-    ok = 0; total_refunded = 0.0
-    for ar in rounds:
-        bet = float(ar["bet_amount"]); uid = ar["user_id"]
-        try:
-            await sb_rpc("change_balance", {"p_user_id": uid, "p_delta": bet})
-            await sb(supabase.table("transactions").insert({
-                "user_id": uid, "type": "admin", "amount": bet, "currency": "USDT",
-                "status": "completed",
-                "meta": {"by": message.from_user.id, "action": "endgame_refund_all"}}))
-            await sb(supabase.table("active_rounds").delete().eq("user_id", uid))
-            total_refunded += bet; ok += 1
-        except Exception as e:
-            log.exception("aendgameall fail: %s", e)
-    await message.answer(f"✅ Завершено <b>{ok}</b> игр, возвращено <b>{total_refunded:.2f}</b>",
-                         parse_mode="HTML")
-
-
-@dp.message(Command("aactive"))
-async def cmd_aactive(message: Message, command: CommandObject):
-    if not admin_only(message): return
-    if not command.args: return await message.answer("/aactive <id>")
-    p = await admin_get_user(message, command.args)
-    if not p: return await message.answer("Юзер не найден")
-    ar = await get_active_round(p["id"])
-    if not ar: return await message.answer("Нет активной игры")
-    await message.answer(
-        f"<b>🎮 Активная игра</b>\n"
-        f"Юзер: <code>{p['telegram_id']}</code>\n"
-        f"Игра: <b>{ar['game_type']}</b>\n"
-        f"Ставка: {float(ar['bet_amount']):.2f}\n"
-        f"Начата: {ar.get('started_at') or '—'}\n"
-        f"State: <code>{json.dumps(ar.get('state', {}))[:400]}</code>",
-        parse_mode="HTML")
-
-
-@dp.message(Command("aactivelist"))
-async def cmd_aactivelist(message: Message):
-    if not admin_only(message): return
-    r = await sb(supabase.table("active_rounds").select("*")
-                 .order("started_at", desc=True).limit(30))
-    if not r.data: return await message.answer("Активных игр нет")
-    uids = list(set(x["user_id"] for x in r.data))
-    prof = await sb(supabase.table("profiles").select("id, telegram_id, first_name").in_("id", uids))
-    nm = {p["id"]: (p.get("first_name") or str(p.get("telegram_id"))) for p in prof.data or []}
-    lines = []
-    for x in r.data:
-        name = nm.get(x["user_id"], "?")
-        lines.append(f"• <b>{name}</b> · {x['game_type']} · {float(x['bet_amount']):.2f}")
-    await message.answer("<b>🎮 Активные игры:</b>\n" + "\n".join(lines), parse_mode="HTML")
-
-
-@dp.message(Command("acleargames"))
-async def cmd_acleargames(message: Message):
-    if not admin_only(message): return
-    await sb(supabase.table("active_rounds").delete().neq("user_id", "00000000-0000-0000-0000-000000000000"))
-    await message.answer("✅ Все активные игры удалены (без возврата)")
-
+        users = (await sb(supabase.table("profiles").select("id, balance"))).data or []
+        tx = (await sb(supabase.table("transactions").select("type, amount, status"))).data or []
+        rounds = (await sb(supabase.table("game_rounds").select("bet_amount, profit, game_type"))).data or []
+        dep = sum(float(t["amount"]) for t in tx if t["type"] == "deposit" and t["status"] == "completed")
+        wd = sum(float(t["amount"]) for t in tx if t["type"] == "withdraw" and t["status"] == "completed")
+        total_bets = sum(float(r["bet_amount"]) for r in rounds)
+        ggr = -sum(float(r["profit"]) for r in rounds)
+        await message.answer(
+            f"👥 Юзеров: <b>{len(users)}</b>\n💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f}</b>\n"
+            f"📥 Депозиты: <b>{dep:.2f}</b>\n📤 Выводы: <b>{wd:.2f}</b>\n"
+            f"🎯 Оборот: <b>{total_bets:.2f}</b>\n📈 GGR: <b>{ggr:+.2f}</b>\n"
+            f"🎮 Игр: {len(rounds)}", parse_mode="HTML")
+    except Exception as e: await message.answer(f"❌ {e}")
 
 @dp.message(Command("aggr"))
 async def cmd_aggr(message: Message):
@@ -825,23 +913,33 @@ async def cmd_aggr(message: Message):
     ggr = -user_profit
     rtp_real = (turnover - ggr) / turnover if turnover else 0
     await message.answer(
-        f"<b>📈 GGR</b>\n"
-        f"Оборот: <b>{turnover:.2f}</b>\n"
-        f"GGR: <b>{ggr:+.2f}</b>\n"
-        f"Профит юзеров: <b>{user_profit:+.2f}</b>\n"
-        f"Реальный RTP: <b>{rtp_real*100:.2f}%</b>\n"
-        f"Игр: {len(rounds)}",
-        parse_mode="HTML")
-
+        f"<b>📈 GGR</b>\nОборот: <b>{turnover:.2f}</b>\nGGR: <b>{ggr:+.2f}</b>\n"
+        f"Реальный RTP: <b>{rtp_real*100:.2f}%</b>\nИгр: {len(rounds)}", parse_mode="HTML")
 
 @dp.message(Command("abalances"))
 async def cmd_abalances(message: Message):
     if not admin_only(message): return
     r = await sb(supabase.table("profiles").select("balance"))
     total = sum(float(x["balance"]) for x in r.data or [])
-    await message.answer(f"💰 Суммарно на балансах: <b>{total:.2f}</b>\nЮзеров: {len(r.data or [])}",
-                         parse_mode="HTML")
+    await message.answer(f"💰 Суммарно: <b>{total:.2f}</b>\nЮзеров: {len(r.data or [])}", parse_mode="HTML")
 
+@dp.message(Command("aonline"))
+async def cmd_aonline(message: Message):
+    if not admin_only(message): return
+    since = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    r = await sb(supabase.table("action_log").select("user_id").gte("created_at", since))
+    uids = list(set(x["user_id"] for x in r.data or []))
+    await message.answer(f"👥 Активны за 5 мин: <b>{len(uids)}</b>", parse_mode="HTML")
+
+@dp.message(Command("arich"))
+async def cmd_arich(message: Message):
+    if not admin_only(message): return
+    r = await sb(supabase.table("profiles").select("telegram_id, first_name, username, balance")
+                 .order("balance", desc=True).limit(15))
+    if not r.data: return await message.answer("Пусто")
+    lines = [f"{i+1}. <b>{p.get('first_name') or p.get('username') or p['telegram_id']}</b> — {float(p['balance']):.2f}"
+             for i, p in enumerate(r.data)]
+    await message.answer("<b>💰 Топ по балансу</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("adaily"))
 async def cmd_adaily(message: Message):
@@ -855,12 +953,9 @@ async def cmd_adaily(message: Message):
     ggr = -sum(float(r["profit"]) for r in rounds)
     users = (await sb(supabase.table("profiles").select("id").gte("created_at", since))).data or []
     await message.answer(
-        f"<b>📅 За 24 часа</b>\n"
-        f"Новых: <b>{len(users)}</b>\n"
+        f"<b>📅 За 24 часа</b>\nНовых: <b>{len(users)}</b>\n"
         f"Депозиты: <b>{dep:.2f}</b>\nВыводы: <b>{wd:.2f}</b>\n"
-        f"Оборот: <b>{bets:.2f}</b>\nGGR: <b>{ggr:+.2f}</b>\nИгр: {len(rounds)}",
-        parse_mode="HTML")
-
+        f"Оборот: <b>{bets:.2f}</b>\nGGR: <b>{ggr:+.2f}</b>\nИгр: {len(rounds)}", parse_mode="HTML")
 
 @dp.message(Command("aweekly"))
 async def cmd_aweekly(message: Message):
@@ -874,12 +969,9 @@ async def cmd_aweekly(message: Message):
     ggr = -sum(float(r["profit"]) for r in rounds)
     users = (await sb(supabase.table("profiles").select("id").gte("created_at", since))).data or []
     await message.answer(
-        f"<b>📅 За 7 дней</b>\n"
-        f"Новых: <b>{len(users)}</b>\n"
+        f"<b>📅 За 7 дней</b>\nНовых: <b>{len(users)}</b>\n"
         f"Депозиты: <b>{dep:.2f}</b>\nВыводы: <b>{wd:.2f}</b>\n"
-        f"Оборот: <b>{bets:.2f}</b>\nGGR: <b>{ggr:+.2f}</b>\nИгр: {len(rounds)}",
-        parse_mode="HTML")
-
+        f"Оборот: <b>{bets:.2f}</b>\nGGR: <b>{ggr:+.2f}</b>\nИгр: {len(rounds)}", parse_mode="HTML")
 
 @dp.message(Command("agames"))
 async def cmd_agames(message: Message):
@@ -894,8 +986,7 @@ async def cmd_agames(message: Message):
     for g, a in sorted(agg.items(), key=lambda x: -x[1]["ggr"]):
         rtp = (a["bets"] - a["ggr"]) / a["bets"] * 100 if a["bets"] else 0
         lines.append(f"<b>{g}</b>: {a['count']} игр · оборот {a['bets']:.2f} · GGR {a['ggr']:+.2f} · RTP {rtp:.1f}%")
-    await message.answer("<b>🎲 По играм</b>\n" + "\n".join(lines) if lines else "Нет данных", parse_mode="HTML")
-
+    await message.answer("<b>🎲 По играм</b>\n" + ("\n".join(lines) if lines else "Нет данных"), parse_mode="HTML")
 
 @dp.message(Command("atop"))
 async def cmd_atop(message: Message):
@@ -906,15 +997,11 @@ async def cmd_atop(message: Message):
     agg = {}
     for row in r.data or []:
         uid = row["user_id"]; pr = row.get("profiles") or {}
-        a = agg.setdefault(uid, {"name": pr.get("first_name") or str(pr.get("telegram_id")),
-                                  "profit": 0.0, "games": 0})
+        a = agg.setdefault(uid, {"name": pr.get("first_name") or str(pr.get("telegram_id")), "profit": 0.0, "games": 0})
         a["profit"] += float(row["profit"]); a["games"] += 1
     items = sorted(agg.items(), key=lambda x: -x[1]["profit"])[:15]
-    lines = [f"{i+1}. <b>{a['name']}</b> — {a['profit']:+.2f} ({a['games']} игр)"
-             for i, (uid, a) in enumerate(items)]
-    await message.answer("<b>🏆 Топ профит (30д)</b>\n" + ("\n".join(lines) if lines else "Нет данных"),
-                         parse_mode="HTML")
-
+    lines = [f"{i+1}. <b>{a['name']}</b> — {a['profit']:+.2f} ({a['games']} игр)" for i, (uid, a) in enumerate(items)]
+    await message.answer("<b>🏆 Топ профит (30д)</b>\n" + ("\n".join(lines) if lines else "Нет"), parse_mode="HTML")
 
 @dp.message(Command("atopdep"))
 async def cmd_atopdep(message: Message):
@@ -929,9 +1016,7 @@ async def cmd_atopdep(message: Message):
         a["sum"] += float(row["amount"])
     items = sorted(agg.items(), key=lambda x: -x[1]["sum"])[:15]
     lines = [f"{i+1}. <b>{a['name']}</b> — {a['sum']:.2f}" for i, (uid, a) in enumerate(items)]
-    await message.answer("<b>💎 Топ депозитов (30д)</b>\n" + ("\n".join(lines) if lines else "Нет данных"),
-                         parse_mode="HTML")
-
+    await message.answer("<b>💎 Топ депозитов (30д)</b>\n" + ("\n".join(lines) if lines else "Нет"), parse_mode="HTML")
 
 @dp.message(Command("atopwd"))
 async def cmd_atopwd(message: Message):
@@ -946,10 +1031,22 @@ async def cmd_atopwd(message: Message):
         a["sum"] += float(row["amount"])
     items = sorted(agg.items(), key=lambda x: -x[1]["sum"])[:15]
     lines = [f"{i+1}. <b>{a['name']}</b> — {a['sum']:.2f}" for i, (uid, a) in enumerate(items)]
-    await message.answer("<b>📤 Топ выводов (30д)</b>\n" + ("\n".join(lines) if lines else "Нет данных"),
-                         parse_mode="HTML")
+    await message.answer("<b>📤 Топ выводов (30д)</b>\n" + ("\n".join(lines) if lines else "Нет"), parse_mode="HTML")
+
+@dp.message(Command("arp"))
+async def cmd_arp(message: Message):
+    if not admin_only(message): return
+    await message.answer(
+        f"📊 RTP: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
+        f"🎲 Кубик ×{DICE_PAYOUT} — {DICE_PAYOUT/6*100:.2f}%\n"
+        f"💥 Crash — {(1-HOUSE_EDGE)*100:.2f}%\n💎 Mines — {(1-HOUSE_EDGE)*100:.2f}%\n"
+        f"🎡 Рулетка RB ×{ROUL_RB_PAYOUT}, дюжина ×{ROUL_DOZEN_PAYOUT}, число ×{ROUL_NUM_PAYOUT}\n"
+        f"🃏 Blackjack — ~{(1-HOUSE_EDGE)*100:.2f}%\n"
+        f"🎰 Plinko — ~{(1-HOUSE_EDGE)*100:.2f}%\n🗼 Tower — ~{(1-HOUSE_EDGE)*100:.2f}%",
+        parse_mode="HTML")
 
 
+# ---- Транзакции ----
 @dp.message(Command("atx"))
 async def cmd_atx(message: Message, command: CommandObject):
     if not admin_only(message): return
@@ -964,7 +1061,6 @@ async def cmd_atx(message: Message, command: CommandObject):
         dt = datetime.fromisoformat(x["created_at"].replace("Z", "+00:00")).strftime("%d.%m %H:%M")
         lines.append(f"• {dt} · {x['type']} · {float(x['amount']):.2f} · {x['status']}")
     await message.answer(f"<b>💸 Транзы {p['telegram_id']}</b>\n" + "\n".join(lines), parse_mode="HTML")
-
 
 @dp.message(Command("atxlast"))
 async def cmd_atxlast(message: Message, command: CommandObject):
@@ -982,8 +1078,7 @@ async def cmd_atxlast(message: Message, command: CommandObject):
     for x in r.data:
         dt = datetime.fromisoformat(x["created_at"].replace("Z", "+00:00")).strftime("%d.%m %H:%M")
         lines.append(f"• {dt} <b>{nm.get(x['user_id'], '?')}</b> · {x['type']} · {float(x['amount']):.2f}")
-    await message.answer("<b>💸 Последние транзы</b>\n" + "\n".join(lines), parse_mode="HTML")
-
+    await message.answer("<b>💸 Последние</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("arefund"))
 async def cmd_arefund(message: Message, command: CommandObject):
@@ -991,10 +1086,9 @@ async def cmd_arefund(message: Message, command: CommandObject):
     if not command.args: return await message.answer("/arefund <tx_id>")
     tx_id = command.args.strip()
     r = await sb(supabase.table("transactions").select("*").eq("id", tx_id))
-    if not r.data: return await message.answer("Транзакция не найдена")
+    if not r.data: return await message.answer("Не найдена")
     tx = r.data[0]
-    if tx["status"] != "completed":
-        return await message.answer(f"Транзакция в статусе {tx['status']}, нельзя вернуть")
+    if tx["status"] != "completed": return await message.answer(f"Статус {tx['status']}, нельзя")
     amt = float(tx["amount"])
     refund = -amt if tx["type"] in ("deposit", "win", "bonus", "ref_reward") else amt
     await sb_rpc("change_balance", {"p_user_id": tx["user_id"], "p_delta": refund})
@@ -1002,9 +1096,75 @@ async def cmd_arefund(message: Message, command: CommandObject):
         "user_id": tx["user_id"], "type": "admin", "amount": abs(refund),
         "currency": "USDT", "status": "completed",
         "meta": {"by": message.from_user.id, "action": "refund", "orig_tx": tx_id}}))
-    await message.answer(f"✅ Возврат {abs(refund):.2f} выполнен")
+    await message.answer(f"✅ Возврат {abs(refund):.2f}")
 
 
+# ---- Промо ----
+@dp.message(Command("anewpromo"))
+async def cmd_anewpromo(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/anewpromo CODE AMOUNT [MAX]")
+    parts = command.args.split()
+    if len(parts) < 2: return await message.answer("/anewpromo CODE AMOUNT [MAX]")
+    code = parts[0].upper().strip()
+    try: amount = float(parts[1].replace(",", "."))
+    except: return await message.answer("Сумма числом")
+    max_uses = None
+    if len(parts) >= 3:
+        try: max_uses = int(parts[2])
+        except: pass
+    if amount <= 0: return await message.answer("Сумма > 0")
+    try:
+        await sb(supabase.table("promo_codes").insert({
+            "code": code, "amount": amount, "max_uses": max_uses, "created_by": message.from_user.id}))
+        await message.answer(f"✅ <code>{code}</code> · {amount} · {'∞' if not max_uses else max_uses}", parse_mode="HTML")
+    except Exception as e: await message.answer(f"❌ {e}")
+
+@dp.message(Command("alistpromos"))
+async def cmd_alistpromos(message: Message):
+    if not admin_only(message): return
+    r = await sb(supabase.table("promo_codes").select("*").order("created_at", desc=True).limit(20))
+    if not r.data: return await message.answer("Промокодов нет")
+    lines = []
+    for p in r.data:
+        uses = f"{p['uses']}/{p['max_uses']}" if p['max_uses'] else f"{p['uses']}/∞"
+        lines.append(f"• <code>{p['code']}</code> — {float(p['amount']):.2f} · {uses}")
+    await message.answer("<b>Промокоды:</b>\n" + "\n".join(lines), parse_mode="HTML")
+
+@dp.message(Command("adelpromo"))
+async def cmd_adelpromo(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/adelpromo CODE")
+    code = command.args.strip().upper()
+    try:
+        await sb(supabase.table("promo_codes").delete().eq("code", code))
+        await message.answer(f"✅ <code>{code}</code> удалён", parse_mode="HTML")
+    except Exception as e: await message.answer(f"❌ {e}")
+
+@dp.message(Command("adelallpromos"))
+async def cmd_adelallpromos(message: Message):
+    if not admin_only(message): return
+    await sb(supabase.table("promo_codes").delete().neq("code", "__none__"))
+    await message.answer("✅ Все промокоды удалены")
+
+@dp.message(Command("apromoinfo"))
+async def cmd_apromoinfo(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not command.args: return await message.answer("/apromoinfo CODE")
+    code = command.args.strip().upper()
+    r = await sb(supabase.table("promo_codes").select("*").eq("code", code))
+    if not r.data: return await message.answer("Не найден")
+    p = r.data[0]
+    uses = await sb(supabase.table("promo_uses").select("user_id, amount").eq("code", code))
+    lines = [f"• user {str(u['user_id'])[:8]} — {float(u['amount']):.2f}" for u in uses.data or []]
+    await message.answer(
+        f"<b>🎟 {code}</b>\nСумма: {float(p['amount']):.2f}\n"
+        f"Использований: {p['uses']}/{p['max_uses'] or '∞'}\n\n"
+        f"<b>Активировали:</b>\n" + ("\n".join(lines) if lines else "—"),
+        parse_mode="HTML")
+
+
+# ---- Рассылки ----
 @dp.message(Command("abroadcast"))
 async def cmd_abroadcast(message: Message, command: CommandObject, state: FSMContext):
     if not admin_only(message): return
@@ -1035,84 +1195,20 @@ async def do_broadcast(message: Message, text: str):
         await asyncio.sleep(0.05)
     await message.answer(f"✅ {ok} доставлено, {fail} ошибок")
 
-
 @dp.message(Command("apush"))
 async def cmd_apush(message: Message, command: CommandObject):
     if not admin_only(message): return
     parts = (command.args or "").split(maxsplit=1)
     if len(parts) < 2: return await message.answer("/apush <id> <текст>")
     p = await admin_get_user(message, parts[0])
-    if not p: return await message.answer("Юзер не найден")
+    if not p: return await message.answer("Не найден")
     try:
         await bot.send_message(p["telegram_id"], f"📢 {parts[1]}")
         await message.answer(f"✅ Отправлено {p['telegram_id']}")
-    except Exception as e:
-        await message.answer(f"❌ {e}")
-
-
-@dp.message(Command("anewpromo"))
-async def cmd_anewpromo(message: Message, command: CommandObject):
-    if not admin_only(message): return
-    if not command.args: return await message.answer("/anewpromo CODE AMOUNT [MAX]")
-    parts = command.args.split()
-    if len(parts) < 2: return await message.answer("/anewpromo CODE AMOUNT [MAX]")
-    code = parts[0].upper().strip()
-    try: amount = float(parts[1].replace(",", "."))
-    except: return await message.answer("Сумма числом")
-    max_uses = None
-    if len(parts) >= 3:
-        try: max_uses = int(parts[2])
-        except: pass
-    if amount <= 0: return await message.answer("Сумма > 0")
-    try:
-        await sb(supabase.table("promo_codes").insert({
-            "code": code, "amount": amount, "max_uses": max_uses, "created_by": message.from_user.id}))
-        await message.answer(f"✅ <code>{code}</code> · {amount} · {'∞' if not max_uses else max_uses}", parse_mode="HTML")
     except Exception as e: await message.answer(f"❌ {e}")
 
 
-@dp.message(Command("alistpromos"))
-async def cmd_alistpromos(message: Message):
-    if not admin_only(message): return
-    r = await sb(supabase.table("promo_codes").select("*").order("created_at", desc=True).limit(20))
-    if not r.data: return await message.answer("Промокодов нет")
-    lines = []
-    for p in r.data:
-        uses = f"{p['uses']}/{p['max_uses']}" if p['max_uses'] else f"{p['uses']}/∞"
-        lines.append(f"• <code>{p['code']}</code> — {float(p['amount']):.2f} · {uses}")
-    await message.answer("<b>Промокоды:</b>\n" + "\n".join(lines), parse_mode="HTML")
-
-
-@dp.message(Command("adelpromo"))
-async def cmd_adelpromo(message: Message, command: CommandObject):
-    if not admin_only(message): return
-    if not command.args: return await message.answer("/adelpromo CODE")
-    code = command.args.strip().upper()
-    try:
-        await sb(supabase.table("promo_codes").delete().eq("code", code))
-        await message.answer(f"✅ <code>{code}</code> удалён", parse_mode="HTML")
-    except Exception as e: await message.answer(f"❌ {e}")
-
-
-@dp.message(Command("apromoinfo"))
-async def cmd_apromoinfo(message: Message, command: CommandObject):
-    if not admin_only(message): return
-    if not command.args: return await message.answer("/apromoinfo CODE")
-    code = command.args.strip().upper()
-    r = await sb(supabase.table("promo_codes").select("*").eq("code", code))
-    if not r.data: return await message.answer("Промокод не найден")
-    p = r.data[0]
-    uses = await sb(supabase.table("promo_uses").select("user_id, amount").eq("code", code))
-    lines = [f"• user {str(u['user_id'])[:8]} — {float(u['amount']):.2f}" for u in uses.data or []]
-    await message.answer(
-        f"<b>🎟 {code}</b>\n"
-        f"Сумма: {float(p['amount']):.2f}\n"
-        f"Использований: {p['uses']}/{p['max_uses'] or '∞'}\n"
-        f"Создан: {p['created_at'][:16]}\n\n"
-        f"<b>Активировали:</b>\n" + ("\n".join(lines) if lines else "—"),
-        parse_mode="HTML")
-
-
+# ---- Настройки ----
 @dp.message(Command("asettings"))
 async def cmd_asettings(message: Message):
     if not admin_only(message): return
@@ -1124,9 +1220,9 @@ async def cmd_asettings(message: Message):
         f"WITHDRAW_COOLDOWN_MIN: {WITHDRAW_COOLDOWN_MIN}\n"
         f"HOUSE_EDGE: {HOUSE_EDGE}\nRTP: {(1-HOUSE_EDGE)*100:.1f}%\n"
         f"REFERRAL_SHARE: {REFERRAL_SHARE}\n"
-        f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}",
+        f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
+        f"Игр активно: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}",
         parse_mode="HTML")
-
 
 @dp.message(Command("asetminbet"))
 async def cmd_asetminbet(message: Message, command: CommandObject):
@@ -1137,7 +1233,6 @@ async def cmd_asetminbet(message: Message, command: CommandObject):
     if v < 0: return await message.answer(">= 0")
     MIN_BET = v; await message.answer(f"✅ MIN_BET = {v}")
 
-
 @dp.message(Command("asetmaxbet"))
 async def cmd_asetmaxbet(message: Message, command: CommandObject):
     global MAX_BET
@@ -1145,7 +1240,6 @@ async def cmd_asetmaxbet(message: Message, command: CommandObject):
     try: v = float(command.args)
     except: return await message.answer("/asetmaxbet 1000")
     MAX_BET = v; await message.answer(f"✅ MAX_BET = {v}")
-
 
 @dp.message(Command("asetmindep"))
 async def cmd_asetmindep(message: Message, command: CommandObject):
@@ -1155,7 +1249,6 @@ async def cmd_asetmindep(message: Message, command: CommandObject):
     except: return await message.answer("/asetmindep 0.1")
     MIN_DEPOSIT = v; await message.answer(f"✅ MIN_DEPOSIT = {v}")
 
-
 @dp.message(Command("asetminwd"))
 async def cmd_asetminwd(message: Message, command: CommandObject):
     global MIN_WITHDRAW
@@ -1164,7 +1257,6 @@ async def cmd_asetminwd(message: Message, command: CommandObject):
     except: return await message.answer("/asetminwd 0.5")
     MIN_WITHDRAW = v; await message.answer(f"✅ MIN_WITHDRAW = {v}")
 
-
 @dp.message(Command("asetmaxwd"))
 async def cmd_asetmaxwd(message: Message, command: CommandObject):
     global MAX_WITHDRAW_DAILY
@@ -1172,7 +1264,6 @@ async def cmd_asetmaxwd(message: Message, command: CommandObject):
     try: v = float(command.args)
     except: return await message.answer("/asetmaxwd 500")
     MAX_WITHDRAW_DAILY = v; await message.answer(f"✅ MAX_WITHDRAW_DAILY = {v}")
-
 
 @dp.message(Command("asetrtp"))
 async def cmd_asetrtp(message: Message, command: CommandObject):
@@ -1187,8 +1278,27 @@ async def cmd_asetrtp(message: Message, command: CommandObject):
     ROUL_RB_PAYOUT = round(2 * (1 - HOUSE_EDGE), 4)
     ROUL_DOZEN_PAYOUT = round(3 * (1 - HOUSE_EDGE), 4)
     ROUL_NUM_PAYOUT = round(36 * (1 - HOUSE_EDGE), 4)
-    await message.answer(f"✅ RTP = {rtp*100:.1f}% (HE = {HOUSE_EDGE})")
+    await message.answer(f"✅ RTP = {rtp*100:.1f}%")
 
+@dp.message(Command("asetref"))
+async def cmd_asetref(message: Message, command: CommandObject):
+    global REFERRAL_SHARE
+    if not admin_only(message): return
+    try: v = float(command.args)
+    except: return await message.answer("/asetref 0.05")
+    if not (0 <= v <= 0.5): return await message.answer("0..0.5")
+    REFERRAL_SHARE = v
+    await message.answer(f"✅ Рефералка = {v*100:.1f}%")
+
+@dp.message(Command("asetcooldown"))
+async def cmd_asetcooldown(message: Message, command: CommandObject):
+    global WITHDRAW_COOLDOWN_MIN
+    if not admin_only(message): return
+    try: v = int(command.args)
+    except: return await message.answer("/asetcooldown 15")
+    if v < 0: return await message.answer(">= 0")
+    WITHDRAW_COOLDOWN_MIN = v
+    await message.answer(f"✅ Кулдаун = {v} мин")
 
 @dp.message(Command("amaintenance"))
 async def cmd_amaintenance(message: Message, command: CommandObject):
@@ -1203,33 +1313,29 @@ async def cmd_amaintenance(message: Message, command: CommandObject):
     await message.answer(f"✅ Maintenance = {'ON' if MAINTENANCE else 'OFF'}")
 
 
+# ---- Система ----
 @dp.message(Command("ahealth"))
 async def cmd_ahealth(message: Message):
     if not admin_only(message): return
     try:
         await sb(supabase.table("profiles").select("id").limit(1))
         sb_status = "✅ OK"
-    except Exception as e:
-        sb_status = f"❌ {type(e).__name__}"
+    except Exception as e: sb_status = f"❌ {type(e).__name__}"
     try:
         async with httpx.AsyncClient(timeout=8) as http:
             rr = await http.get(f"{XROCKET_API_BASE}/api/v1/me",
                                 headers={"Authorization": f"Bearer {XROCKET_API_KEY}"})
             xr_status = f"✅ {rr.status_code}" if rr.status_code < 500 else f"⚠️ {rr.status_code}"
-    except Exception as e:
-        xr_status = f"❌ {type(e).__name__}"
+    except Exception as e: xr_status = f"❌ {type(e).__name__}"
     active_count = len((await sb(supabase.table("active_rounds").select("user_id"))).data or [])
+    enabled = sum(1 for v in GAMES_ENABLED.values() if v)
     await message.answer(
-        f"<b>🩺 Health</b>\n"
-        f"Supabase: {sb_status}\n"
-        f"xRocket: {xr_status}\n"
-        f"Crash loop: <b>{crash_state['status']}</b>\n"
-        f"Crash round: <code>{crash_state.get('round_id') or '—'}</code>\n"
+        f"<b>🩺 Health</b>\nSupabase: {sb_status}\nXroket: {xr_status}\n"
+        f"Crash: <b>{crash_state['status']}</b>\n"
         f"Активных игр: <b>{active_count}</b>\n"
+        f"Игр вкл: <b>{enabled}/{len(GAMES_ENABLED)}</b>\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
-        f"Uptime: {int(time.time() - START_TIME)}s",
-        parse_mode="HTML")
-
+        f"Uptime: {int(time.time() - START_TIME)}s", parse_mode="HTML")
 
 @dp.message(Command("alogs"))
 async def cmd_alogs(message: Message, command: CommandObject):
@@ -1249,6 +1355,16 @@ async def cmd_alogs(message: Message, command: CommandObject):
         lines.append(f"• {dt} <b>{nm.get(x['user_id'], '?')}</b> — {x['action']}")
     await message.answer("<b>📋 Логи</b>\n" + "\n".join(lines), parse_mode="HTML")
 
+@dp.message(Command("aclearlogs"))
+async def cmd_aclearlogs(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    days = 7
+    if command.args:
+        try: days = int(command.args)
+        except: pass
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    await sb(supabase.table("action_log").delete().lt("created_at", cutoff))
+    await message.answer(f"✅ Логи старше {days}д удалены")
 
 @dp.message(Command("aadmins"))
 async def cmd_aadmins(message: Message):
@@ -1278,13 +1394,11 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
         f"Привет, {message.from_user.first_name}! 👋\n\n💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>{extra}",
         reply_markup=main_menu(), parse_mode="HTML")
 
-
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
     p = await get_or_create_profile(message.from_user.model_dump())
     cur = p.get("preferred_currency") or "USDT"
     await message.answer(f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>", parse_mode="HTML", reply_markup=back_kb())
-
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -1293,17 +1407,14 @@ async def cmd_stats(message: Message):
     await message.answer(fmt_stats(s, float(p["balance"]), message.from_user.first_name),
                          parse_mode="HTML", reply_markup=back_kb())
 
-
 @dp.message(Command("promo"))
 async def cmd_promo(message: Message, command: CommandObject):
     if not command.args: return await message.answer("Использование: /promo КОД")
     await try_redeem_promo(message, command.args.strip().upper())
 
-
 @dp.message(Command("dice"))
 async def cmd_dice(message: Message):
     await message.answer("🎲 Выбери ставку:", reply_markup=dice_bet_kb())
-
 
 @dp.message(Command("currency"))
 async def cmd_currency(message: Message, command: CommandObject):
@@ -1361,14 +1472,12 @@ async def cb_menu(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("🏠 Главное меню:", reply_markup=main_menu())
 
-
 @dp.callback_query(F.data == "menu:stats")
 async def cb_stats(cb: CallbackQuery):
     p = await get_or_create_profile(cb.from_user.model_dump())
     s = await get_user_stats(p["id"])
     await cb.message.edit_text(fmt_stats(s, float(p["balance"]), cb.from_user.first_name),
                                parse_mode="HTML", reply_markup=back_kb())
-
 
 @dp.callback_query(F.data == "menu:deposit")
 async def cb_deposit(cb: CallbackQuery, state: FSMContext):
@@ -1377,7 +1486,6 @@ async def cb_deposit(cb: CallbackQuery, state: FSMContext):
     cur = p.get("preferred_currency") or "USDT"
     await cb.message.edit_text(f"💰 <b>Пополнение</b>\nВалюта: <b>{cur}</b> (/currency)\nМин: {MIN_DEPOSIT}",
                                parse_mode="HTML", reply_markup=deposit_kb())
-
 
 @dp.callback_query(F.data.startswith("dep:"))
 async def cb_dep_amount(cb: CallbackQuery, state: FSMContext):
@@ -1398,7 +1506,6 @@ async def cb_dep_amount(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
     await cb.message.edit_text(f"💰 Счёт на <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=kb)
 
-
 @dp.callback_query(F.data == "menu:withdraw")
 async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1411,7 +1518,6 @@ async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
         f"Лимит/сутки: <b>{max(0,left):.2f}</b> из {MAX_WITHDRAW_DAILY:.0f}\nМинимум: {MIN_WITHDRAW}{hint}\n\n"
         f"<b>⚠️ Средства приходят на @xRocket.</b>\n\nВыбери сумму:",
         parse_mode="HTML", reply_markup=withdraw_kb(bal))
-
 
 @dp.callback_query(F.data.startswith("wd:"))
 async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
@@ -1451,7 +1557,6 @@ async def fsm_deposit_amount(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
     await message.answer(f"💰 Счёт на <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=kb)
 
-
 @dp.message(AmountInput.withdraw)
 async def fsm_withdraw_amount(message: Message, state: FSMContext):
     try: amount = float(message.text.replace(",", ".").strip())
@@ -1489,14 +1594,12 @@ async def cb_dice(cb: CallbackQuery):
     await cb.message.edit_text(f"🎲 <b>Кубы</b>\nЧисло 1–6, ×<b>{DICE_PAYOUT}</b>.\nСтавка:",
                                parse_mode="HTML", reply_markup=dice_bet_kb())
 
-
 @dp.callback_query(F.data.startswith("dice_bet:"))
 async def cb_dice_bet(cb: CallbackQuery):
     bet = float(cb.data.split(":")[1])
     p = await get_or_create_profile(cb.from_user.model_dump())
     if float(p["balance"]) < bet: return await cb.answer("Недостаточно", show_alert=True)
     await cb.message.edit_text(f"🎲 Ставка <b>{bet}</b>. Число:", parse_mode="HTML", reply_markup=dice_num_kb(bet))
-
 
 @dp.callback_query(F.data.startswith("dnum:"))
 async def cb_dice_num(cb: CallbackQuery):
@@ -1550,6 +1653,7 @@ async def cb_ref_menu(cb: CallbackQuery):
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
+# =================== FastAPI ===================
 @asynccontextmanager
 async def lifespan(app):
     global BOT_USERNAME
@@ -1581,6 +1685,7 @@ async def config():
         "withdraw_cooldown_min": WITHDRAW_COOLDOWN_MIN, "max_withdraw_daily": MAX_WITHDRAW_DAILY,
         "referral_share": REFERRAL_SHARE, "currencies": SUPPORTED_CURRENCIES,
         "maintenance": MAINTENANCE,
+        "games_enabled": GAMES_ENABLED,
         "rtp": round(1 - HOUSE_EDGE, 4),
         "payouts": {"dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
                     "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
@@ -1622,8 +1727,7 @@ def _profile_sync(user):
 async def profile(user: dict = Depends(get_current_user)):
     try: return await asyncio.to_thread(_profile_sync, user)
     except Exception:
-        log.exception("profile endpoint failed")
-        raise HTTPException(500, "profile error")
+        log.exception("profile endpoint failed"); raise HTTPException(500, "profile error")
 
 
 @app.post("/api/profile/currency")
@@ -1796,6 +1900,7 @@ async def xrocket_webhook(request: Request):
     return {"ok": True}
 
 
+# =================== CRASH API ===================
 def _crash_state_sync(p):
     status = crash_state["status"]; mult = 1.0
     if status == "running" and crash_state["started_at"]:
@@ -1837,6 +1942,7 @@ async def crash_state_endpoint(user: dict = Depends(get_current_user)):
 
 @app.post("/api/crash/bet")
 async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("crash")
     if MAINTENANCE: raise HTTPException(503, "технические работы")
     if crash_state["status"] != "betting": raise HTTPException(400, "ставки закрыты")
     bet = float(body.get("bet", 0)); auto = body.get("auto_cashout_mult")
@@ -1907,6 +2013,7 @@ async def roulette_bets():
 
 @app.post("/api/games/dice/bet")
 async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("dice")
     if MAINTENANCE: raise HTTPException(503, "технические работы")
     bet = float(body.get("bet", 0)); chosen = int(body.get("chosen", 0))
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
@@ -1934,6 +2041,7 @@ async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
 
 @app.post("/api/games/plinko/drop")
 async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
+    ensure_game_enabled("plinko")
     if MAINTENANCE: raise HTTPException(503, "технические работы")
     bet = float(body.get("bet", 0)); rows = int(body.get("rows", 8))
     if rows not in (8, 12, 16): raise HTTPException(400, "rows 8/12/16")
@@ -1967,332 +2075,4 @@ async def bj_state(user: dict = Depends(get_current_user)):
     if not ar or ar["game_type"] != "blackjack":
         return {"active": False}
     st = ar["state"]
-    return {
-        "active": True,
-        "player": st["player"],
-        "dealer": [st["dealer"][0], "??"],
-        "player_value": bj_value(st["player"]),
-        "dealer_value": bj_value([st["dealer"][0]]),
-        "finished": False,
-        "bet": float(ar["bet_amount"]),
-    }
-
-
-@app.post("/api/games/blackjack/start")
-async def bj_start(body: dict, user: dict = Depends(get_current_user)):
-    if MAINTENANCE: raise HTTPException(503, "технические работы")
-    bet = float(body.get("bet", 0))
-    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
-    p = await get_or_create_profile(user)
-    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
-    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    ar = await get_active_round(p["id"])
-    if ar:
-        if ar["game_type"] == "blackjack":
-            st = ar["state"]
-            return {"ok": True, "resumed": True, "player": st["player"],
-                    "dealer": [st["dealer"][0], "??"],
-                    "player_value": bj_value(st["player"]),
-                    "dealer_value": bj_value([st["dealer"][0]]),
-                    "finished": False}
-        raise HTTPException(400, f"активная игра: {ar['game_type']}. Сначала доиграй её.")
-    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    deck = bj_deck(ss, p["client_seed"], nonce)
-    player = [deck[0], deck[2]]; dealer = [deck[1], deck[3]]; rest = deck[4:]
-    player_v = bj_value(player)
-    state = {"player": player, "dealer": dealer, "rest": rest, "bet": bet, "status": "player_turn"}
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
-    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
-    await sb(supabase.table("active_rounds").insert({
-        "user_id": p["id"], "game_type": "blackjack", "bet_amount": bet,
-        "state": state, "server_seed": ss, "nonce": nonce}))
-    await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
-        "status": "completed", "meta": {"game": "blackjack"}}))
-    if player_v == 21:
-        dealer_full = bj_value(dealer)
-        if dealer_full == 21:
-            payout = bet; profit = 0
-            await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
-        else:
-            payout = round(bet * 2.5, 8); profit = round(payout - bet, 8)
-            await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-        await sb(supabase.table("transactions").insert({
-            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
-            "status": "completed", "meta": {"game": "blackjack", "bj": True}}))
-        await log_round(p["id"], "blackjack", bet,
-                        {"player": player, "dealer": dealer, "bj": True}, profit, ss, nonce)
-        await clear_active_round(p["id"])
-        return {"ok": True, "player": player, "dealer": dealer,
-                "player_value": player_v, "dealer_value": dealer_full,
-                "finished": True, "win": profit > 0, "push": profit == 0,
-                "profit": profit, "payout": payout}
-    return {"ok": True, "player": player, "dealer": [dealer[0], "??"],
-            "player_value": player_v, "dealer_value": bj_value([dealer[0]]),
-            "finished": False}
-
-
-@app.post("/api/games/blackjack/hit")
-async def bj_hit(user: dict = Depends(get_current_user)):
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "blackjack": raise HTTPException(400, "нет активной игры")
-    st = ar["state"]
-    if st["status"] != "player_turn": raise HTTPException(400, "не твой ход")
-    rest = st["rest"]
-    if not rest: raise HTTPException(400, "колода кончилась")
-    card = rest.pop(0); st["player"].append(card); st["rest"] = rest
-    pv = bj_value(st["player"])
-    if pv > 21:
-        await log_round(p["id"], "blackjack", float(st["bet"]),
-                        {"player": st["player"], "dealer": st["dealer"], "bust": True},
-                        -float(st["bet"]), ar["server_seed"], ar["nonce"])
-        asyncio.create_task(credit_referrer_on_loss(p["id"], float(st["bet"])))
-        await clear_active_round(p["id"])
-        return {"ok": True, "player": st["player"], "dealer": st["dealer"],
-                "player_value": pv, "dealer_value": bj_value(st["dealer"]),
-                "finished": True, "win": False, "push": False,
-                "profit": -float(st["bet"]), "payout": 0}
-    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
-    return {"ok": True, "player": st["player"], "dealer": [st["dealer"][0], "??"],
-            "player_value": pv, "dealer_value": bj_value([st["dealer"][0]]),
-            "finished": False}
-
-
-@app.post("/api/games/blackjack/stand")
-async def bj_stand(user: dict = Depends(get_current_user)):
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "blackjack": raise HTTPException(400, "нет активной игры")
-    st = ar["state"]
-    if st["status"] != "player_turn": raise HTTPException(400, "уже завершено")
-    rest = st["rest"]
-    while bj_value(st["dealer"]) < 17 and rest:
-        st["dealer"].append(rest.pop(0))
-    st["rest"] = rest
-    pv = bj_value(st["player"]); dv = bj_value(st["dealer"])
-    bet = float(st["bet"]); profit = -bet; payout = 0; push = False; win = False
-    if dv > 21 or pv > dv:
-        win = True; payout = round(bet * 2, 8); profit = round(payout - bet, 8)
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-        await sb(supabase.table("transactions").insert({
-            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
-            "status": "completed", "meta": {"game": "blackjack"}}))
-    elif pv == dv:
-        push = True; profit = 0; payout = bet
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
-    else:
-        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-    await log_round(p["id"], "blackjack", bet,
-                    {"player": st["player"], "dealer": st["dealer"], "win": win, "push": push},
-                    profit, ar["server_seed"], ar["nonce"])
-    await clear_active_round(p["id"])
-    return {"ok": True, "player": st["player"], "dealer": st["dealer"],
-            "player_value": pv, "dealer_value": dv,
-            "finished": True, "win": win, "push": push,
-            "profit": profit, "payout": payout}
-
-
-@app.get("/api/games/tower/state")
-async def tower_state(user: dict = Depends(get_current_user)):
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "tower":
-        return {"active": False}
-    st = ar["state"]
-    return {
-        "active": True,
-        "level": st["level"],
-        "mult": tower_mult(st["level"]),
-        "next_mult": tower_mult(st["level"] + 1),
-        "bet": float(ar["bet_amount"]),
-        "revealed": st.get("revealed", []),
-        "mine_positions": st["mine_positions"],
-    }
-
-
-@app.post("/api/games/tower/start")
-async def tower_start(body: dict, user: dict = Depends(get_current_user)):
-    if MAINTENANCE: raise HTTPException(503, "технические работы")
-    bet = float(body.get("bet", 0))
-    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
-    p = await get_or_create_profile(user)
-    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
-    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    ar = await get_active_round(p["id"])
-    if ar:
-        if ar["game_type"] == "tower":
-            st = ar["state"]
-            return {"ok": True, "resumed": True, "level": st["level"],
-                    "mult": tower_mult(st["level"]),
-                    "next_mult": tower_mult(st["level"] + 1)}
-        raise HTTPException(400, f"активная игра: {ar['game_type']}. Сначала доиграй её.")
-    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    positions = tower_step_positions(ss, p["client_seed"], nonce, levels=6)
-    state = {"level": 0, "mine_positions": positions, "bet": bet, "revealed": []}
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
-    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
-    await sb(supabase.table("active_rounds").insert({
-        "user_id": p["id"], "game_type": "tower", "bet_amount": bet,
-        "state": state, "server_seed": ss, "nonce": nonce}))
-    await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
-        "status": "completed", "meta": {"game": "tower"}}))
-    return {"ok": True, "level": 0, "mult": 1.0, "next_mult": tower_mult(1)}
-
-
-@app.post("/api/games/tower/step")
-async def tower_step(body: dict, user: dict = Depends(get_current_user)):
-    door = int(body.get("door", -1))
-    if not (0 <= door <= 2): raise HTTPException(400, "door 0..2")
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "tower": raise HTTPException(400, "нет активной игры")
-    st = ar["state"]
-    level = st["level"]
-    if level >= len(st["mine_positions"]): raise HTTPException(400, "макс уровень")
-    mine = st["mine_positions"][level]
-    bet = float(st["bet"])
-    if door == mine:
-        await log_round(p["id"], "tower", bet,
-                        {"level": level, "door": door, "mine": mine, "lost": True},
-                        -bet, ar["server_seed"], ar["nonce"])
-        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-        await clear_active_round(p["id"])
-        return {"ok": True, "lost": True, "mine": mine, "level": level}
-    st["level"] = level + 1
-    st["revealed"].append({"level": level, "door": door, "mine": mine})
-    new_level = st["level"]
-    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
-    return {"ok": True, "lost": False, "level": new_level,
-            "mult": tower_mult(new_level), "next_mult": tower_mult(new_level + 1),
-            "mine": mine, "all_levels": st["mine_positions"]}
-
-
-@app.post("/api/games/tower/cashout")
-async def tower_cashout(user: dict = Depends(get_current_user)):
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "tower": raise HTTPException(400, "нет активной игры")
-    st = ar["state"]
-    level = st["level"]
-    if level <= 0: raise HTTPException(400, "пройди хотя бы 1 уровень")
-    bet = float(st["bet"]); mult = tower_mult(level)
-    payout = round(bet * mult, 8); profit = round(payout - bet, 8)
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-    await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
-        "status": "completed", "meta": {"game": "tower", "mult": mult}}))
-    await log_round(p["id"], "tower", bet,
-                    {"level": level, "mult": mult, "revealed": st["revealed"]},
-                    profit, ar["server_seed"], ar["nonce"])
-    await clear_active_round(p["id"])
-    return {"ok": True, "level": level, "mult": mult, "payout": payout, "profit": profit,
-            "mine_positions": st["mine_positions"]}
-
-
-@app.post("/api/games/mines/start")
-async def mines_start(body: dict, user: dict = Depends(get_current_user)):
-    if MAINTENANCE: raise HTTPException(503, "технические работы")
-    bet = float(body.get("bet", 0)); mines = int(body.get("mines", 3))
-    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
-    if not (1 <= mines <= 24): raise HTTPException(400, "mines 1..24")
-    p = await get_or_create_profile(user)
-    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
-    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    if await get_active_round(p["id"]): raise HTTPException(400, "active round exists")
-    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    positions = mine_positions(ss, p["client_seed"], nonce, mines)
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
-    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
-    await sb(supabase.table("active_rounds").insert({
-        "user_id": p["id"], "game_type": "mines", "bet_amount": bet,
-        "state": {"mines": mines, "positions": positions, "revealed": []},
-        "server_seed": ss, "nonce": nonce}))
-    await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
-        "status": "completed", "meta": {"game": "mines"}}))
-    return {"ok": True, "mines": mines, "mult": mines_mult(mines, 0)}
-
-
-@app.post("/api/games/mines/reveal")
-async def mines_reveal(body: dict, user: dict = Depends(get_current_user)):
-    idx = int(body.get("cell", -1))
-    if not (0 <= idx < 25): raise HTTPException(400, "bad cell")
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "mines": raise HTTPException(400, "no active mines round")
-    st = ar["state"]
-    if idx in st["revealed"]: raise HTTPException(400, "already revealed")
-    positions = set(st["positions"]); bet = float(ar["bet_amount"])
-    if idx in positions:
-        await log_round(p["id"], "mines", bet,
-                        {"mine_hit": idx, "revealed": st["revealed"], "mines": st["mines"], "positions": st["positions"]},
-                        -bet, ar["server_seed"], ar["nonce"])
-        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-        await clear_active_round(p["id"])
-        return {"ok": True, "lost": True, "mine_hit": idx, "positions": st["positions"]}
-    st["revealed"].append(idx)
-    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
-    return {"ok": True, "lost": False, "revealed": st["revealed"],
-            "mult": mines_mult(st["mines"], len(st["revealed"]))}
-
-
-@app.post("/api/games/mines/cashout")
-async def mines_cashout(user: dict = Depends(get_current_user)):
-    p = await get_or_create_profile(user)
-    ar = await get_active_round(p["id"])
-    if not ar or ar["game_type"] != "mines": raise HTTPException(400, "no active mines round")
-    st = ar["state"]; k = len(st["revealed"])
-    if k == 0: raise HTTPException(400, "reveal at least one cell")
-    bet = float(ar["bet_amount"]); mult = mines_mult(st["mines"], k)
-    payout = round(bet * mult, 8); profit = round(payout - bet, 8)
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-    await log_round(p["id"], "mines", bet,
-                    {"revealed": st["revealed"], "mult": mult, "mines": st["mines"], "positions": st["positions"]},
-                    profit, ar["server_seed"], ar["nonce"])
-    await sb(supabase.table("transactions").insert({
-        "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
-        "status": "completed", "meta": {"game": "mines"}}))
-    await clear_active_round(p["id"])
-    return {"ok": True, "mult": mult, "payout": payout, "profit": profit, "positions": st["positions"]}
-
-
-RED = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
-BLACK = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
-
-
-@app.post("/api/games/roulette/bet")
-async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
-    if MAINTENANCE: raise HTTPException(503, "технические работы")
-    bet = float(body.get("bet", 0)); bt = body.get("type"); bv = body.get("value")
-    if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
-    p = await get_or_create_profile(user)
-    await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
-    if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    n = roulette_number(ss, p["client_seed"], nonce)
-    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
-    await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
-    win = False; pm = 0.0
-    if bt == "red" and n in RED: win, pm = True, ROUL_RB_PAYOUT
-    elif bt == "black" and n in BLACK: win, pm = True, ROUL_RB_PAYOUT
-    elif bt == "even" and n != 0 and n % 2 == 0: win, pm = True, ROUL_RB_PAYOUT
-    elif bt == "odd" and n % 2 == 1: win, pm = True, ROUL_RB_PAYOUT
-    elif bt in ("dozen1","dozen2","dozen3"):
-        d = {"dozen1": range(1,13), "dozen2": range(13,25), "dozen3": range(25,37)}[bt]
-        if n in d: win, pm = True, ROUL_DOZEN_PAYOUT
-    elif bt == "number" and int(bv) == n: win, pm = True, ROUL_NUM_PAYOUT
-    profit = -bet
-    if win:
-        payout = round(bet * pm, 8); profit = round(payout - bet, 8)
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-        await sb(supabase.table("transactions").insert({
-            "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
-            "status": "completed", "meta": {"game": "roulette"}}))
-    else:
-        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-    await log_round(p["id"], "roulette", bet, {"n": n, "bet_type": bt, "win": win}, profit, ss, nonce)
-    color = "green" if n == 0 else ("red" if n in RED else "black")
-    return {"ok": True, "number": n, "color": color, "win": win,
-            "payout": round(bet * pm, 8) if win else 0, "profit": profit}
+    return
