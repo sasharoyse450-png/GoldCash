@@ -173,10 +173,13 @@ def dice_result(ss, cs, n):
 
 def plinko_path(ss, cs, n, rows):
     idx = 0
+    path = []
     for i in range(rows):
         r = pf_rand(ss, cs, n * 1000 + i)
-        if r >= 0.5: idx += 1
-    return idx
+        step = 1 if r >= 0.5 else 0
+        path.append(step)
+        idx += step
+    return idx, path
 
 def tower_step_positions(ss, cs, n, levels=6):
     positions = []
@@ -466,9 +469,8 @@ async def cmd_ahelp(message: Message):
         "/aresetnonce id · /aresetserver id\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎮 Игры</b>\n"
-        "/aendgame id [lose] — завершить активную игру (с возвратом / без)\n"
-        "/aendgameall — завершить ВСЕ игры с возвратом\n"
-        "/aactive id · /aactivelist · /acleargames\n"
+        "/aendgame id [lose]\n"
+        "/aendgameall · /aactive id · /aactivelist · /acleargames\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📊 Статистика</b>\n"
         "/astats · /aggr · /abalances\n"
@@ -490,9 +492,7 @@ async def cmd_ahelp(message: Message):
         "/asetrtp v · /amaintenance on|off\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🩺 Система</b>\n"
-        "/ahealth · /alogs n · /aadmins\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "/admin — короткая панель",
+        "/ahealth · /alogs n · /aadmins",
         parse_mode="HTML")
 
 
@@ -1942,7 +1942,7 @@ async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
-    idx = plinko_path(ss, p["client_seed"], nonce, rows)
+    idx, path = plinko_path(ss, p["client_seed"], nonce, rows)
     mult = PLINKO_MULTS[rows][idx]
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
@@ -1956,7 +1956,8 @@ async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
     await log_round(p["id"], "plinko", bet, {"rows": rows, "slot": idx, "mult": mult},
                     profit, ss, nonce)
-    return {"ok": True, "slot": idx, "mult": mult, "payout": payout, "profit": profit, "rows": rows}
+    return {"ok": True, "slot": idx, "mult": mult, "payout": payout, "profit": profit,
+            "rows": rows, "path": path}
 
 
 @app.get("/api/games/blackjack/state")
@@ -2053,7 +2054,9 @@ async def bj_hit(user: dict = Depends(get_current_user)):
                 "finished": True, "win": False, "push": False,
                 "profit": -float(st["bet"]), "payout": 0}
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
-    return {"ok": True, "player": st["player"], "player_value": pv, "finished": False}
+    return {"ok": True, "player": st["player"], "dealer": [st["dealer"][0], "??"],
+            "player_value": pv, "dealer_value": bj_value([st["dealer"][0]]),
+            "finished": False}
 
 
 @app.post("/api/games/blackjack/stand")
