@@ -86,14 +86,14 @@
     background: rgba(251,191,36,.1); border-radius: 6px;
   }
 
-  /* ========== GAME CARDS (large, hero) ========== */
+  /* ========== BIG GAME CARDS ========== */
   .game-card {
     position: relative;
     display: block;
     width: 100%;
-    border-radius: 12px;
+    border-radius: 14px;
     overflow: hidden;
-    background: var(--surface);
+    background: #10141c;
     border: 1px solid var(--border);
     text-align: left;
     cursor: pointer;
@@ -101,32 +101,29 @@
   }
   .game-card:active { border-color: var(--border-hi); }
 
+  /* hero с огромной буквой */
   .game-hero {
-    height: 160px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 68px;
     position: relative;
+    height: 150px;
     overflow: hidden;
   }
-  .game-hero::after {
-    content: '';
+  .game-hero-bg {
     position: absolute; inset: 0;
-    background: linear-gradient(180deg, transparent 50%, rgba(0,0,0,.35) 100%);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 130px;
+    font-weight: 900;
+    letter-spacing: -.06em;
+    color: rgba(255,255,255,.08);
+    line-height: .8;
+    user-select: none;
+    pointer-events: none;
+    white-space: nowrap;
+    transform: translateY(2px);
   }
-  .game-hero.crash     { background: radial-gradient(120% 120% at 20% 0%, #3a1725 0%, #0f060a 100%); }
-  .game-hero.mines     { background: radial-gradient(120% 120% at 20% 0%, #0f2c23 0%, #061410 100%); }
-  .game-hero.roulette  { background: radial-gradient(120% 120% at 20% 0%, #33161a 0%, #12070a 100%); }
-  .game-hero.dice      { background: radial-gradient(120% 120% at 20% 0%, #1c2340 0%, #080b18 100%); }
-  .game-hero.plinko    { background: radial-gradient(120% 120% at 20% 0%, #302514 0%, #14100a 100%); }
-  .game-hero.blackjack { background: radial-gradient(120% 120% at 20% 0%, #0f2e1e 0%, #061510 100%); }
-  .game-hero.tower     { background: radial-gradient(120% 120% at 20% 0%, #281438 0%, #10081a 100%); }
-
-  .game-hero-icon { position: relative; z-index: 1; filter: drop-shadow(0 4px 12px rgba(0,0,0,.5)); }
+  .game-hero-bg.two-lines { font-size: 90px; letter-spacing: -.08em; }
 
   .game-rtp {
-    position: absolute; top: 12px; left: 12px;
+    position: absolute; top: 10px; left: 10px;
     font-size: 10px; font-weight: 800; letter-spacing: .06em;
     color: var(--green);
     background: rgba(10,13,18,.7);
@@ -136,25 +133,50 @@
     border: 1px solid rgba(16,185,129,.2);
   }
 
+  /* инфо-строка снизу */
   .game-overlay {
+    position: relative;
     padding: 12px 14px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    background: var(--surface);
+    background: #10141c;
     border-top: 1px solid var(--border);
+    z-index: 1;
   }
-  .game-name { font-size: 17px; font-weight: 900; letter-spacing: -.025em; }
-  .game-hint { font-size: 11px; color: var(--muted); margin-top: 2px; font-weight: 600; }
+  .game-name {
+    font-size: 18px; font-weight: 900;
+    letter-spacing: -.03em;
+    color: #fff;
+  }
   .game-play {
-    font-size: 11px; font-weight: 800;
-    color: var(--accent);
-    text-transform: uppercase; letter-spacing: .06em;
+    background: #1f2532;
+    color: #fff;
+    border: 1px solid var(--border-hi);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px; font-weight: 800;
     white-space: nowrap;
   }
 
-  /* ========== BOTTOM NAV ========== */
+  /* цвета фонов карточек — очень тёмные, не AI-стиль */
+  .game-card.crash     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #241019 0%, #0d0810 100%); }
+  .game-card.mines     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #0f2018 0%, #08120d 100%); }
+  .game-card.roulette  .game-hero { background: radial-gradient(120% 100% at 0% 0%, #21100f 0%, #100808 100%); }
+  .game-card.dice      .game-hero { background: radial-gradient(120% 100% at 0% 0%, #131a2b 0%, #080c16 100%); }
+  .game-card.plinko    .game-hero { background: radial-gradient(120% 100% at 0% 0%, #1f1a0e 0%, #100d08 100%); }
+  .game-card.blackjack .game-hero { background: radial-gradient(120% 100% at 0% 0%, #0d1e16 0%, #071009 100%); }
+  .game-card.tower     .game-hero { background: radial-gradient(120% 100% at 0% 0%, #1a1024 0%, #0e0815 100%); }
+
+  .game-card.mines     .game-hero-bg { color: rgba(255,255,255,.07); }
+  .game-card.crash     .game-hero-bg { color: rgba(255,255,255,.08); }
+  .game-card.roulette  .game-hero-bg { color: rgba(255,255,255,.07); }
+  .game-card.dice      .game-hero-bg { color: rgba(255,255,255,.09); }
+  .game-card.plinko    .game-hero-bg { color: rgba(255,255,255,.07); }
+  .game-card.blackjack .game-hero-bg { color: rgba(255,255,255,.07); }
+  .game-card.tower     .game-hero-bg { color: rgba(255,255,255,.08); }
+
   .nav { background: var(--bg); border-top: 1px solid var(--border); }
   .nav-btn {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -164,7 +186,6 @@
   .nav-btn.active { color: var(--accent); }
   .nav-btn svg { width: 20px; height: 20px; }
 
-  /* ========== MODALS ========== */
   .modal { position: fixed; inset: 0; display: none; background: rgba(0,0,0,.7); align-items: flex-end; z-index: 100; }
   .modal.open { display: flex; }
   .modal-box {
@@ -656,27 +677,24 @@ async function loadLive() {
 }
 
 const games = [
-  { id:"crash",     title:"Crash",     hint:"Множитель растёт",        icon:"💥", cls:"crash" },
-  { id:"mines",     title:"Mines",     hint:"5×5, найди алмазы",        icon:"💎", cls:"mines" },
-  { id:"roulette",  title:"Roulette",  hint:"37 чисел, европейская",    icon:"🎡", cls:"roulette" },
-  { id:"dice",      title:"Dice",      hint:"Угадай число 1–6",         icon:"🎲", cls:"dice" },
-  { id:"plinko",    title:"Plinko",    hint:"Шарик, до ×16",            icon:"🔻", cls:"plinko" },
-  { id:"blackjack", title:"Blackjack", hint:"До 21 очка, ×2.5",         icon:"🃏", cls:"blackjack" },
-  { id:"tower",     title:"Tower",     hint:"6 уровней, 3 двери",       icon:"🗼", cls:"tower" },
+  { id:"crash",     title:"Crash",     bigText:"CRASH",     cls:"crash" },
+  { id:"mines",     title:"Mines",     bigText:"MINES",     cls:"mines" },
+  { id:"roulette",  title:"Roulette",  bigText:"ROULETTE",  cls:"roulette" },
+  { id:"dice",      title:"Dice",      bigText:"DICE",      cls:"dice" },
+  { id:"plinko",    title:"Plinko",    bigText:"PLINKO",    cls:"plinko" },
+  { id:"blackjack", title:"Blackjack", bigText:"BLACKJACK", cls:"blackjack two-lines" },
+  { id:"tower",     title:"Tower",     bigText:"TOWER",     cls:"tower" },
 ];
 function renderGames() {
   document.getElementById("games").innerHTML = games.map(g => `
-    <button class="game-card" data-id="${g.id}" data-title="${g.title}">
-      <div class="game-hero ${g.cls}">
-        <span class="game-hero-icon">${g.icon}</span>
+    <button class="game-card ${g.cls}" data-id="${g.id}" data-title="${g.title}">
+      <div class="game-hero">
+        <div class="game-hero-bg ${g.cls.includes("two-lines")?'two-lines':''}">${g.bigText}</div>
         <span class="game-rtp">RTP 96%</span>
       </div>
       <div class="game-overlay">
-        <div>
-          <div class="game-name">${g.title}</div>
-          <div class="game-hint">${g.hint}</div>
-        </div>
-        <div class="game-play">Играть →</div>
+        <div class="game-name">${g.title}</div>
+        <div class="game-play">Играть</div>
       </div>
     </button>`).join("");
 }
