@@ -383,15 +383,41 @@ async def antifraud_check(tg_user, ip: str, fingerprint: str):
         log.exception("antifraud_check failed")
 
 # ================== SUBSCRIPTION ==================
-async def is_subscribed(user_id: int) -> bool:
-    if is_admin(user_id): return True
-    if not CHANNEL_ID: return True
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ("member", "administrator", "creator")
-    except Exception as e:
-        log.warning("is_subscribed failed for %s: %s", user_id, e)
+SUB_STATUSES = ("member", "administrator", "creator")
+_sub_cache: dict[int, tuple[bool, float]] = {}
+SUB_CACHE_TTL = 30
+
+async def is_subscribed(user_id: int, skip_cache: bool = False) -> bool:
+    if is_admin(user_id):
         return True
+    if not CHANNEL_ID:
+        return True
+
+    now = time.time()
+    if not skip_cache:
+        cached = _sub_cache.get(user_id)
+        if cached and (now - cached[1]) < SUB_CACHE_TTL:
+            return cached[0]
+
+    for attempt in range(2):
+        try:
+            member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            status = member.status
+            if status == "restricted":
+                result = bool(getattr(member, "is_member", False))
+            elif status == "left":
+                result = False
+            else:
+                result = status in SUB_STATUSES
+            _sub_cache[user_id] = (result, now)
+            return result
+        except Exception as e:
+            log.warning("is_subscribed attempt %s for %s failed: %s", attempt + 1, user_id, e)
+            if attempt == 0:
+                await asyncio.sleep(0.4)
+                continue
+            return False
+    return False
 
 def sub_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -399,23 +425,31 @@ def sub_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")]])
 
 async def send_sub_prompt(message: Message):
-    if not CHANNEL_URL: return
+    if not CHANNEL_URL:
+        await message.answer("⚠️ Канал не настроен. Обратись к администратору.")
+        return
+    ch_name = CHANNEL_URL.replace("https://t.me/", "@").replace("http://t.me/", "@")
     await message.answer(
         "🔒 <b>Доступ только для подписчиков</b>\n\n"
-        f"Подпишись:\n👉 <a href=\"{CHANNEL_URL}\">{CHANNEL_URL.replace('https://t.me/', '@')}</a>\n"
-        "После подписки нажми «Я подписался».",
+        f"Чтобы пользоваться ботом, подпишись на канал:\n"
+        f"👉 {ch_name}\n\n"
+        "После подписки нажми <b>«✅ Я подписался»</b>.\n\n"
+        "<i>Если уже подписан, но бот не пускает — подожди 10 сек и нажми ещё раз.</i>",
         parse_mode="HTML", reply_markup=sub_kb(), disable_web_page_preview=True)
 
 class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
-        if user is None: return await handler(event, data)
+        if user is None:
+            return await handler(event, data)
+        # пропускаем только /start и check_sub
         try:
             if hasattr(event, "text") and event.text and event.text.startswith("/start"):
                 return await handler(event, data)
             if hasattr(event, "data") and event.data == "check_sub":
                 return await handler(event, data)
-        except Exception: pass
+        except Exception:
+            pass
         if not await is_subscribed(user.id):
             if isinstance(event, CallbackQuery):
                 try: await event.answer("🔒 Сначала подпишись на канал", show_alert=True)
@@ -477,6 +511,47 @@ async def xrocket_create_payout(user_id, amount, comment, client_id, currency="U
     status = data.get("status") or "pending"
     log.info("xRocket payout created: id=%s status=%s", payout_id, status)
     return {"id": payout_id, "status": status, "raw": data}
+
+async def xrocket_get_invoice(invoice_id: str):
+    """Проверяет статус инвойса в xRocket."""
+    try:
+        data = await xrocket_request("GET", f"/api/v1/invoices/{invoice_id}")
+        return data
+    except Exception as e:
+        log.warning("xrocket_get_invoice %s failed: %s", invoice_id, e)
+        return None
+
+async def check_pending_deposits(user_id: str):
+    """Проверяет все pending-депозиты юзера и зачисляет оплаченные."""
+    try:
+        r = await sb(supabase.table("transactions")
+                     .select("*")
+                     .eq("user_id", user_id)
+                     .eq("type", "deposit")
+                     .eq("status", "pending")
+                     .order("created_at", desc=True)
+                     .limit(10))
+        txs = r.data or []
+        for tx in txs:
+            inv_id = (tx.get("meta") or {}).get("invoice_id")
+            if not inv_id:
+                continue
+            data = await xrocket_get_invoice(inv_id)
+            if not data:
+                continue
+            status = (data.get("status") or "").lower()
+            if status in ("paid", "completed", "success"):
+                await sb_rpc("change_balance",
+                             {"p_user_id": tx["user_id"], "p_delta": float(tx["amount"])})
+                await sb(supabase.table("transactions").update({
+                    "status": "completed",
+                    "meta": {**(tx.get("meta") or {}),
+                             "credited_at": datetime.now(timezone.utc).isoformat(),
+                             "source": "poll"},
+                }).eq("id", tx["id"]))
+                log.info("✅ deposit credited via poll: %s", tx["id"])
+    except Exception:
+        log.exception("check_pending_deposits failed")
 
 # ================== MATH / PF ==================
 def pf_rand(ss, cs, n):
@@ -597,6 +672,33 @@ async def get_current_user(
     return u
 
 # ================== DB ==================
+async def notify_admin_new_user(tg_user, profile):
+    try:
+        name = tg_user.get("first_name") or "без имени"
+        last = tg_user.get("last_name") or ""
+        username = f"@{tg_user['username']}" if tg_user.get("username") else "—"
+        lang = tg_user.get("language_code") or "—"
+        is_premium = "⭐" if tg_user.get("is_premium") else ""
+        now = datetime.now(timezone.utc).strftime("%d.%m %H:%M UTC")
+        text = (
+            f"🆕 <b>Новый пользователь в боте</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"👤 <b>{name} {last}</b> {is_premium}\n"
+            f"🔗 {username}\n"
+            f"🆔 <code>{tg_user['id']}</code>\n"
+            f"🌐 Язык: {lang}\n"
+            f"💰 Баланс: {float(profile.get('balance') or 0):.2f} ₮\n"
+            f"🕐 {now}"
+        )
+        for aid in ADMIN_IDS:
+            try:
+                await bot.send_message(aid, text, parse_mode="HTML")
+            except Exception as e:
+                log.warning("notify admin %s failed: %s", aid, e)
+    except Exception:
+        log.exception("notify_admin_new_user failed")
+
+
 async def get_or_create_profile(tg_user):
     tg_id = int(tg_user["id"])
     r = await sb(supabase.table("profiles").select("*").eq("telegram_id", tg_id))
@@ -604,7 +706,9 @@ async def get_or_create_profile(tg_user):
     ins = await sb(supabase.table("profiles").insert({
         "telegram_id": tg_id, "username": tg_user.get("username"),
         "first_name": tg_user.get("first_name"), "preferred_currency": "USDT"}))
-    return ins.data[0]
+    new_profile = ins.data[0]
+    asyncio.create_task(notify_admin_new_user(tg_user, new_profile))
+    return new_profile
 
 async def get_profile_by_tg(tg_id: int):
     r = await sb(supabase.table("profiles").select("*").eq("telegram_id", tg_id))
@@ -984,7 +1088,7 @@ async def cmd_ahelp(message: Message):
         "/arisk ID /aflag ID [reason] /aunflag ID /aalts ID /aantifraud /asamelist\n"
         "/astats /aggr /abalances /aonline /arich /adaily /aweekly /agames\n"
         "/atop /atopdep /atopwd /arp /avip [ID]\n"
-        "/atx /atxlast /arefund\n"
+        "/atx /atxlast /arefund /acheckpending\n"
         "/anewpromo CODE SUM [WAGER] [USES] [MAX_BET] [GAMES]\n"
         "/alistpromos /adelpromo /adelallpromos /apromoinfo /awager /aresetwager\n"
         "/apromogames /asetbonusgames\n"
@@ -1004,6 +1108,7 @@ async def cmd_admin(message: Message):
         f"Antifraud: {'✅' if ANTIFRAUD_ENABLED else '❌'} (порог {AUTO_FLAG_SCORE})\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
         f"Игры: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}\n"
+        f"Канал: {CHANNEL_ID or '— не задан —'}\n"
         f"Все команды: /ahelp", parse_mode="HTML")
 
 @dp.message(Command("astatus"))
@@ -1039,6 +1144,48 @@ async def cmd_aoffall(message: Message):
     if not admin_only(message): return
     for g in GAMES_ENABLED: GAMES_ENABLED[g] = False
     await message.answer("⛔ Все игры выкл")
+
+@dp.message(Command("acheckpending"))
+async def cmd_acheckpending(message: Message):
+    if not admin_only(message): return
+    r = await sb(supabase.table("transactions")
+                 .select("*")
+                 .eq("type", "deposit")
+                 .eq("status", "pending")
+                 .order("created_at", desc=True)
+                 .limit(50))
+    txs = r.data or []
+    if not txs:
+        return await message.answer("Нет pending депозитов")
+    await message.answer(f"🔎 Проверяю {len(txs)} pending…")
+    credited = 0
+    failed = 0
+    for tx in txs:
+        inv_id = (tx.get("meta") or {}).get("invoice_id")
+        if not inv_id:
+            failed += 1
+            continue
+        data = await xrocket_get_invoice(inv_id)
+        if not data:
+            failed += 1
+            continue
+        status = (data.get("status") or "").lower()
+        if status in ("paid", "completed", "success"):
+            await sb_rpc("change_balance",
+                         {"p_user_id": tx["user_id"], "p_delta": float(tx["amount"])})
+            await sb(supabase.table("transactions").update({
+                "status": "completed",
+                "meta": {**(tx.get("meta") or {}),
+                         "credited_at": datetime.now(timezone.utc).isoformat(),
+                         "source": "admin_check"},
+            }).eq("id", tx["id"]))
+            credited += 1
+        else:
+            failed += 1
+    await message.answer(
+        f"✅ Зачислено: <b>{credited}</b>\n"
+        f"⏳ Ещё в ожидании / ошибок: <b>{failed}</b>",
+        parse_mode="HTML")
 
 @dp.message(Command("avip"))
 async def cmd_avip(message: Message, command: CommandObject):
@@ -1696,7 +1843,8 @@ async def cmd_asettings(message: Message):
         f"HE {HOUSE_EDGE} · RTP {(1-HOUSE_EDGE)*100:.1f}% · Ref {REFERRAL_SHARE}\n"
         f"Daily {DAILY_BONUS}₮/{BONUS_COOLDOWN_H}ч\n"
         f"Antifraud {'✅' if ANTIFRAUD_ENABLED else '❌'} порог {AUTO_FLAG_SCORE}\n"
-        f"Maint {'ON' if MAINTENANCE else 'OFF'}", parse_mode="HTML")
+        f"Maint {'ON' if MAINTENANCE else 'OFF'}\n"
+        f"Канал: {CHANNEL_ID or '— не задан —'}", parse_mode="HTML")
 
 @dp.message(Command("asetminbet"))
 async def cmd_asetminbet(message: Message, command: CommandObject):
@@ -1786,6 +1934,7 @@ async def cmd_ahealth(message: Message):
     await message.answer(
         f"<b>🩺</b>\nSupabase: {sb_st}\nXroket: {xr_st}\nCrash: {crash_state['status']}\n"
         f"Активных игр: {active}\nИгр вкл: {enabled}/{len(GAMES_ENABLED)}\n"
+        f"Канал: {CHANNEL_ID or '— не задан —'}\n"
         f"Maint: {'ON' if MAINTENANCE else 'OFF'}\nUptime: {int(time.time()-START_TIME)}s",
         parse_mode="HTML")
 
@@ -1863,7 +2012,7 @@ async def cmd_apush(message: Message, command: CommandObject):
 # ================== USER COMMANDS ==================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
-    if not await is_subscribed(message.from_user.id):
+    if not await is_subscribed(message.from_user.id, skip_cache=True):
         return await send_sub_prompt(message)
     await state.clear()
     p = await get_or_create_profile(message.from_user.model_dump())
@@ -1889,16 +2038,26 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
 
 @dp.callback_query(F.data == "check_sub")
 async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
-    if not await is_subscribed(cb.from_user.id):
-        return await cb.answer("❌ Не подписан", show_alert=True)
-    await cb.answer("✅")
+    await cb.answer("⏳ Проверяю…")
+    await asyncio.sleep(1.0)
+    ok = await is_subscribed(cb.from_user.id, skip_cache=True)
+    if not ok:
+        return await cb.answer(
+            "❌ Ты ещё не подписан на канал\n\n"
+            "1. Подпишись по кнопке выше\n"
+            "2. Подожди 10 сек\n"
+            "3. Нажми «Я подписался» снова",
+            show_alert=True)
+    _sub_cache[cb.from_user.id] = (True, time.time())
     try: await cb.message.delete()
     except: pass
     await state.clear()
     p = await get_or_create_profile(cb.from_user.model_dump())
     cur = p.get("preferred_currency") or "USDT"
     await cb.message.answer(
-        f"👋 <b>GoldCash!</b>\n\n💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n/help",
+        f"✅ <b>Подписка подтверждена!</b>\n\n"
+        f"💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n"
+        f"Команды: /help",
         reply_markup=main_menu(), parse_mode="HTML")
 
 @dp.message(Command("help"))
@@ -2366,6 +2525,9 @@ def _profile_sync(user):
 
 @app.get("/api/profile")
 async def profile(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    # проверяем pending депозиты в фоне
+    asyncio.create_task(check_pending_deposits(p["id"]))
     return await asyncio.to_thread(_profile_sync, user)
 
 @app.get("/api/vip")
@@ -2593,39 +2755,106 @@ async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
 @app.post("/api/webhook/xrocket")
 async def xrocket_webhook(request: Request):
     raw = await request.body()
-    sig = request.headers.get("Signature"); ver = request.headers.get("Signature-Version")
-    ts = request.headers.get("Signature-Timestamp")
-    if not all([sig, ver, ts]): raise HTTPException(401, "sig")
-    if ver != "v1": raise HTTPException(401, "ver")
-    if abs(int(time.time()*1000) - int(ts)) > 300_000: raise HTTPException(401, "old")
-    expected = hmac.new(XROCKET_WEBHOOK_SECRET.encode(),
-                        f"{ts}.{raw.decode()}".encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, sig): raise HTTPException(401, "bad sig")
+    sig = request.headers.get("Signature")
+    ver = request.headers.get("Signature-Version")
+    ts  = request.headers.get("Signature-Timestamp")
+
+    log.info("🔔 WEBHOOK raw=%s headers(sig=%s ver=%s ts=%s)",
+             raw[:500], sig, ver, ts)
+
+    if not all([sig, ver, ts]):
+        log.warning("webhook missing headers")
+        raise HTTPException(401, "missing sig")
+    if ver != "v1":
+        raise HTTPException(401, "unsupported version")
+    try:
+        if abs(int(time.time() * 1000) - int(ts)) > 300_000:
+            raise HTTPException(401, "timestamp too old")
+    except (ValueError, TypeError):
+        raise HTTPException(401, "bad ts")
+
+    expected = hmac.new(
+        XROCKET_WEBHOOK_SECRET.encode(),
+        f"{ts}.{raw.decode()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        log.error("webhook BAD SIGNATURE expected=%s got=%s", expected, sig)
+        raise HTTPException(401, "bad sig")
+
     event = json.loads(raw)
-    log.info("xRocket webhook: %s", event)
-    etype = event.get("type")
+    log.info("✅ xRocket webhook verified: %s", event)
+
+    etype  = event.get("type")
     status = event.get("status")
 
+    # ============ ДЕПОЗИТ ============
     if etype == "invoice" and status == "paid":
-        cid = (event.get("clientInvoiceId")
-               or (event.get("invoice") or {}).get("clientInvoiceId")
-               or (event.get("payload") or {}).get("clientInvoiceId"))
-        if cid:
-            tx = (await sb(supabase.table("transactions").select("*")
-                           .eq("external_id", str(cid)).eq("status", "pending"))).data
-            if tx:
-                row = tx[0]
-                await sb_rpc("change_balance", {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
-                await sb(supabase.table("transactions").update({"status": "completed"}).eq("id", row["id"]))
-                log.info("✅ deposit credited: %s", cid)
+        cid = (
+            event.get("clientInvoiceId")
+            or (event.get("invoice") or {}).get("clientInvoiceId")
+            or (event.get("payload") or {}).get("clientInvoiceId")
+            or event.get("payload")
+            or (event.get("invoice") or {}).get("payload")
+        )
+        invoice_id = (
+            event.get("invoiceId")
+            or event.get("id")
+            or (event.get("invoice") or {}).get("id")
+        )
+        log.info("💰 invoice paid: cid=%s invoice_id=%s", cid, invoice_id)
 
-    if etype == "payout":
-        cid = (event.get("clientPayoutId")
-               or (event.get("payout") or {}).get("clientPayoutId")
-               or (event.get("payload") or {}).get("clientPayoutId"))
+        tx = []
         if cid:
             tx = (await sb(supabase.table("transactions").select("*")
-                           .eq("external_id", str(cid)))).data
+                           .eq("external_id", str(cid))
+                           .eq("status", "pending"))).data or []
+        if not tx and invoice_id:
+            tx = (await sb(supabase.table("transactions").select("*")
+                           .eq("meta->>invoice_id", str(invoice_id))
+                           .eq("status", "pending"))).data or []
+
+        if tx:
+            row = tx[0]
+            await sb_rpc("change_balance",
+                         {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
+            await sb(supabase.table("transactions").update({
+                "status": "completed",
+                "meta": {"credited_at": datetime.now(timezone.utc).isoformat(),
+                         "invoice_id": invoice_id},
+            }).eq("id", row["id"]))
+            log.info("✅ DEPOSIT CREDITED user=%s amount=%s", row["user_id"], row["amount"])
+
+            try:
+                prof = (await sb(supabase.table("profiles")
+                                 .select("first_name, username, telegram_id")
+                                 .eq("id", row["user_id"]))).data
+                if prof:
+                    pr = prof[0]
+                    nm = pr.get("first_name") or pr.get("username") or "anon"
+                    for aid in ADMIN_IDS:
+                        try:
+                            await bot.send_message(
+                                aid,
+                                f"💰 <b>Депозит зачислен</b>\n"
+                                f"👤 {nm} (<code>{pr['telegram_id']}</code>)\n"
+                                f"+{float(row['amount']):.2f} {row.get('currency','USDT')}",
+                                parse_mode="HTML")
+                        except: pass
+            except: pass
+        else:
+            log.warning("⚠️ transaction not found for cid=%s invoice_id=%s", cid, invoice_id)
+
+    # ============ ВЫВОД ============
+    if etype == "payout":
+        cid = (
+            event.get("clientPayoutId")
+            or (event.get("payout") or {}).get("clientPayoutId")
+            or (event.get("payload") or {}).get("clientPayoutId")
+        )
+        if cid:
+            tx = (await sb(supabase.table("transactions").select("*")
+                           .eq("external_id", str(cid)))).data or []
             if tx:
                 row = tx[0]
                 if status in ("completed", "paid", "success"):
@@ -2640,6 +2869,7 @@ async def xrocket_webhook(request: Request):
                                       "meta": {"error": event.get("reason", "unknown")}})
                              .eq("id", row["id"]))
                     log.warning("❌ payout failed, refunded: %s", cid)
+
     return {"ok": True}
 
 # ================== CRASH API ==================
