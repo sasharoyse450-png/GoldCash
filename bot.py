@@ -1,4 +1,4 @@
-import os, json, hmac, hashlib, logging, asyncio, time
+import os, json, hmac, hashlib, logging, asyncio, time, math
 from urllib.parse import parse_qsl
 from contextlib import asynccontextmanager
 from math import comb
@@ -26,13 +26,25 @@ HOUSE_EDGE = float(os.environ.get("HOUSE_EDGE", "0.05"))
 MIN_BET = float(os.environ.get("MIN_BET", "1"))
 MAX_BET = float(os.environ.get("MAX_BET", "1000"))
 WITHDRAW_COOLDOWN_MIN = int(os.environ.get("WITHDRAW_COOLDOWN_MIN", "15"))
-DICE_PAYOUT = 5.5  # x за угаданное число 1-6
+DICE_PAYOUT = 5.5
+
+CRASH_BETTING_SEC = 10
+CRASH_COOLDOWN_SEC = 4
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 xrocket: xRocketClient | None = None
 
+crash_state = {
+    "round_id": None,
+    "status": "idle",       # idle | betting | running | crashed
+    "server_seed": None,
+    "crash_point": None,
+    "started_at": None,     # unix seconds
+    "betting_ends_at": None,
+}
 
-# =================== PF / math ===================
+
+# =================== math / PF ===================
 def pf_rand(ss, cs, n):
     h = hmac.new(ss.encode(), f"{cs}:{n}".encode(), hashlib.sha256).hexdigest()
     return int(h[:13], 16) / float(0xFFFFFFFFFFFFF)
@@ -103,14 +115,17 @@ def clear_active_round(uid):
     supabase.table("active_rounds").delete().eq("user_id", uid).execute()
 
 def log_round(uid, game, bet, result, profit, ss, nonce):
-    supabase.table("game_rounds").insert({
-        "user_id": uid, "game_type": game, "bet_amount": bet,
-        "result": result, "profit": profit, "server_seed": ss, "nonce": nonce,
-    }).execute()
+    try:
+        supabase.table("game_rounds").insert({
+            "user_id": uid, "game_type": game, "bet_amount": bet,
+            "result": result, "profit": profit, "server_seed": ss, "nonce": nonce,
+        }).execute()
+    except Exception:
+        log.exception("log_round failed")
 
 def get_user_stats(uid):
-    tx = supabase.table("transactions").select("*").eq("user_id", uid).execute().data or []
-    rounds = supabase.table("game_rounds").select("*").eq("user_id", uid).execute().data or []
+    tx = supabase.table("transactions").select("type, amount, status").eq("user_id", uid).execute().data or []
+    rounds = supabase.table("game_rounds").select("id").eq("user_id", uid).execute().data or []
     deposits = sum(float(t["amount"]) for t in tx if t["type"] == "deposit" and t["status"] == "completed")
     withdrawals = sum(float(t["amount"]) for t in tx if t["type"] == "withdraw" and t["status"] == "completed")
     wins = sum(float(t["amount"]) for t in tx if t["type"] == "win")
@@ -125,6 +140,7 @@ def get_user_stats(uid):
     }
 
 
+# =================== payments ===================
 async def create_deposit_invoice(profile, amount):
     cid = f"dep_{profile['id'][:8]}_{int(time.time())}"
     inv = await xrocket.create_invoice(
@@ -151,7 +167,6 @@ async def do_withdraw(profile, tg_id, amount):
                 raise HTTPException(400, f"после депозита подожди {m}м {s}с")
         except HTTPException: raise
         except Exception: log.exception("cooldown check failed")
-
     cid = f"wd_{profile['id'][:8]}_{int(time.time())}"
     payout = await xrocket.create_payout(
         target=str(tg_id), target_type="telegram_user_id",
@@ -167,10 +182,71 @@ async def do_withdraw(profile, tg_id, amount):
     return payout
 
 
+# =================== GLOBAL CRASH LOOP ===================
+async def crash_loop():
+    global crash_state
+    # подождём инициализацию
+    await asyncio.sleep(3)
+    while True:
+        try:
+            ss = os.urandom(16).hex()
+            cp = crash_point(ss, "global", 0)
+            now = time.time()
+            res = supabase.table("crash_rounds").insert({
+                "status": "betting",
+                "server_seed": ss,
+                "crash_point": cp,
+            }).execute()
+            round_id = res.data[0]["id"]
+
+            crash_state.update({
+                "round_id": round_id, "status": "betting",
+                "server_seed": ss, "crash_point": cp,
+                "started_at": None,
+                "betting_ends_at": now + CRASH_BETTING_SEC,
+            })
+            log.info("crash round %s: betting for %ss, crash_point=%s", round_id, CRASH_BETTING_SEC, cp)
+            await asyncio.sleep(CRASH_BETTING_SEC)
+
+            started = time.time()
+            supabase.table("crash_rounds").update({
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", round_id).execute()
+            crash_state["status"] = "running"
+            crash_state["started_at"] = started
+            log.info("crash round %s: running", round_id)
+
+            duration = max(0.4, math.log(cp) / math.log(1.07)) if cp > 1.0 else 0.4
+            await asyncio.sleep(duration)
+
+            supabase.table("crash_rounds").update({
+                "status": "crashed",
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", round_id).execute()
+            crash_state["status"] = "crashed"
+            log.info("crash round %s: crashed at %sx", round_id, cp)
+
+            # помечаем проигравших
+            lost = supabase.table("crash_bets").select("*") \
+                .eq("round_id", round_id).eq("status", "active").execute().data or []
+            for b in lost:
+                supabase.table("crash_bets").update({"status": "lost"}).eq("id", b["id"]).execute()
+                log_round(b["user_id"], "crash", float(b["amount"]),
+                          {"global": True, "crashed_at": cp}, -float(b["amount"]), ss, 0)
+
+            await asyncio.sleep(CRASH_COOLDOWN_SEC)
+            crash_state["status"] = "idle"
+            crash_state["round_id"] = None
+
+        except Exception as e:
+            log.exception("crash loop error: %s", e)
+            await asyncio.sleep(5)
+
+
 # =================== aiogram ===================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -183,10 +259,7 @@ def main_menu():
     ])
 
 def back_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]
-    ])
-
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
 
 def fmt_stats(s, balance, first_name):
     return (
@@ -195,12 +268,11 @@ def fmt_stats(s, balance, first_name):
         f"━━━━━━━━━━━━━━━\n"
         f"📥 Пополнено: <b>{s['deposits']:.2f} ₮</b>\n"
         f"📤 Выведено: <b>{s['withdrawals']:.2f} ₮</b>\n"
-        f"🎯 Ставок сделано: <b>{s['bets']:.2f} ₮</b>\n"
+        f"🎯 Ставок: <b>{s['bets']:.2f} ₮</b>\n"
         f"🏆 Выигрышей: <b>{s['wins']:.2f} ₮</b>\n"
-        f"🎮 Игр сыграно: <b>{s['games']}</b>\n"
+        f"🎮 Игр: <b>{s['games']}</b>\n"
         f"📊 Профит: <b>{s['net']:+.2f} ₮</b>"
     )
-
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -209,8 +281,7 @@ async def cmd_start(message: Message):
         f"Привет, {message.from_user.first_name}! 👋\n\n"
         f"💎 Твой баланс: <b>{float(p['balance']):.2f} ₮</b>\n\n"
         f"Играй в кубы, пополняй и выводи прямо здесь.",
-        reply_markup=main_menu(),
-        parse_mode="HTML",
+        reply_markup=main_menu(), parse_mode="HTML",
     )
 
 @dp.message(Command("balance"))
@@ -234,10 +305,13 @@ async def cmd_dice(message: Message):
 async def cmd_deposit(message: Message, command: CommandObject):
     try: amount = float(command.args)
     except Exception: return await message.answer("Использование: /deposit 10")
-    await _send_deposit_invoice(message.from_user, amount, message)
+    p = get_or_create_profile(message.from_user.model_dump())
+    try: inv = await create_deposit_invoice(p, amount)
+    except Exception as e:
+        return await message.answer(f"Ошибка: {e}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])]])
+    await message.answer(f"💰 Счёт на <b>{amount} USDT</b> создан.", parse_mode="HTML", reply_markup=kb)
 
-
-# ---------- callback: menu ----------
 @dp.callback_query(F.data == "menu:main")
 async def cb_menu(cb: CallbackQuery):
     await cb.message.edit_text("🏠 Главное меню:", reply_markup=main_menu())
@@ -261,27 +335,22 @@ async def cb_deposit(cb: CallbackQuery):
     rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dep:{a}") for a in amounts[i:i+3]]
             for i in range(0, len(amounts), 3)]
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    await cb.message.edit_text("💰 Выбери сумму пополнения (USDT):",
+    await cb.message.edit_text("💰 Сумма пополнения (USDT):",
                                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 @dp.callback_query(F.data.startswith("dep:"))
 async def cb_dep_amount(cb: CallbackQuery):
     amount = float(cb.data.split(":")[1])
     p = get_or_create_profile(cb.from_user.model_dump())
-    try:
-        inv = await create_deposit_invoice(p, amount)
+    try: inv = await create_deposit_invoice(p, amount)
     except Exception as e:
-        log.exception("create_invoice failed")
         return await cb.answer(f"Ошибка: {e}", show_alert=True)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])],
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
     ])
-    await cb.message.edit_text(
-        f"💰 Счёт на <b>{amount} USDT</b> создан.\n\n"
-        f"Нажми кнопку «Оплатить» — откроется xRocket. "
-        f"После оплаты баланс зачислится автоматически.",
-        parse_mode="HTML", reply_markup=kb)
+    await cb.message.edit_text(f"💰 Счёт на <b>{amount} USDT</b> создан.",
+                               parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(F.data == "menu:withdraw")
 async def cb_withdraw(cb: CallbackQuery):
@@ -289,15 +358,12 @@ async def cb_withdraw(cb: CallbackQuery):
     bal = float(p["balance"])
     if bal < 1:
         return await cb.answer("Минимум для вывода — 1 USDT", show_alert=True)
-    amounts = [a for a in [5, 10, 25, 50, 100, 250] if a <= bal]
-    if not amounts:
-        amounts = [bal]
+    amounts = [a for a in [5, 10, 25, 50, 100, 250] if a <= bal] or [bal]
     rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"wd:{a}") for a in amounts[i:i+3]]
             for i in range(0, len(amounts), 3)]
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    await cb.message.edit_text(
-        f"💸 Баланс: <b>{bal:.2f} ₮</b>\nВыбери сумму вывода (USDT):",
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.message.edit_text(f"💸 Баланс: <b>{bal:.2f} ₮</b>\nВыбери сумму вывода:",
+                               parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 @dp.callback_query(F.data.startswith("wd:"))
 async def cb_wd_amount(cb: CallbackQuery):
@@ -307,18 +373,15 @@ async def cb_wd_amount(cb: CallbackQuery):
         return await cb.answer("Недостаточно средств", show_alert=True)
     try:
         await do_withdraw(p, cb.from_user.id, amount)
-    except HTTPException as e:
-        return await cb.answer(str(e.detail), show_alert=True)
+    except HTTPException as e: return await cb.answer(str(e.detail), show_alert=True)
     except Exception as e:
         log.exception("payout failed")
-        return await cb.answer(f"Ошибка выплаты: {e}", show_alert=True)
-    await cb.message.edit_text(
-        f"✅ Выплата <b>{amount} ₮</b> отправлена.\n"
-        f"Средства пришли на твой аккаунт xRocket.",
-        parse_mode="HTML", reply_markup=back_kb())
+        return await cb.answer(f"Ошибка: {e}", show_alert=True)
+    await cb.message.edit_text(f"✅ Выплата <b>{amount} ₮</b> отправлена.",
+                               parse_mode="HTML", reply_markup=back_kb())
 
 
-# ---------- dice game ----------
+# =================== DICE ===================
 def dice_bet_kb():
     amounts = [1, 5, 10, 25, 50, 100]
     rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dice_bet:{a}") for a in amounts[i:i+3]]
@@ -327,24 +390,17 @@ def dice_bet_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def dice_num_kb(bet):
-    rows = [
-        [InlineKeyboardButton(text="1", callback_data=f"dnum:1:{bet}"),
-         InlineKeyboardButton(text="2", callback_data=f"dnum:2:{bet}"),
-         InlineKeyboardButton(text="3", callback_data=f"dnum:3:{bet}")],
-        [InlineKeyboardButton(text="4", callback_data=f"dnum:4:{bet}"),
-         InlineKeyboardButton(text="5", callback_data=f"dnum:5:{bet}"),
-         InlineKeyboardButton(text="6", callback_data=f"dnum:6:{bet}")],
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=str(n), callback_data=f"dnum:{n}:{bet}") for n in (1,2,3)],
+        [InlineKeyboardButton(text=str(n), callback_data=f"dnum:{n}:{bet}") for n in (4,5,6)],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:dice"),
          InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    ])
 
 @dp.callback_query(F.data == "menu:dice")
 async def cb_dice(cb: CallbackQuery):
     await cb.message.edit_text(
-        f"🎲 <b>Игра в кубы</b>\n\n"
-        f"Выбери число 1–6. Если кубик выпадет тем же — выигрыш <b>{DICE_PAYOUT}x</b>.\n\n"
-        f"Сначала выбери ставку:",
+        f"🎲 <b>Игра в кубы</b>\n\nВыбери число 1–6. Если выпадет — ×<b>{DICE_PAYOUT}</b>.\n\nСначала ставка:",
         parse_mode="HTML", reply_markup=dice_bet_kb())
 
 @dp.callback_query(F.data.startswith("dice_bet:"))
@@ -353,59 +409,42 @@ async def cb_dice_bet(cb: CallbackQuery):
     p = get_or_create_profile(cb.from_user.model_dump())
     if float(p["balance"]) < bet:
         return await cb.answer("Недостаточно средств", show_alert=True)
-    await cb.message.edit_text(
-        f"🎲 Ставка: <b>{bet} ₮</b>\nВыбери число (1–6):",
-        parse_mode="HTML", reply_markup=dice_num_kb(bet))
+    await cb.message.edit_text(f"🎲 Ставка: <b>{bet} ₮</b>\nВыбери число (1–6):",
+                               parse_mode="HTML", reply_markup=dice_num_kb(bet))
 
 @dp.callback_query(F.data.startswith("dnum:"))
 async def cb_dice_num(cb: CallbackQuery):
     _, num_s, bet_s = cb.data.split(":")
     num, bet = int(num_s), float(bet_s)
     p = get_or_create_profile(cb.from_user.model_dump())
-
     if float(p["balance"]) < bet:
         return await cb.answer("Недостаточно средств", show_alert=True)
-
-    # Списываем ставку
     supabase.rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet}).execute()
     supabase.table("transactions").insert({
         "user_id": p["id"], "type": "bet", "amount": bet,
         "currency": "USDT", "status": "completed", "meta": {"game": "dice", "chosen": num},
     }).execute()
-
-    # Меняем сообщение и бросаем кубик
-    await cb.message.edit_text(f"🎲 Бросаем...\n\nСтавка: <b>{bet} ₮</b> · Твоё число: <b>{num}</b>",
-                               parse_mode="HTML")
-
+    await cb.message.edit_text(f"🎲 Бросаем...\n\nСтавка: <b>{bet} ₮</b> · Твоё число: <b>{num}</b>", parse_mode="HTML")
     dice_msg = await bot.send_dice(chat_id=cb.message.chat.id, emoji="🎲")
     result = dice_msg.dice.value
-    await asyncio.sleep(3.5)  # ждём анимацию
-
+    await asyncio.sleep(3.5)
     win = (result == num)
+    profit = 0.0
     if win:
-        payout = round(bet * DICE_PAYOUT, 8)
-        profit = round(payout - bet, 8)
+        payout = round(bet * DICE_PAYOUT, 8); profit = round(payout - bet, 8)
         supabase.rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout}).execute()
         supabase.table("transactions").insert({
             "user_id": p["id"], "type": "win", "amount": profit,
             "currency": "USDT", "status": "completed", "meta": {"game": "dice"},
         }).execute()
-        text = (f"🎲 Выпало: <b>{result}</b>\n"
-                f"🎯 Твоё число: <b>{num}</b>\n\n"
-                f"✅ <b>ПОБЕДА!</b> +{profit:.2f} ₮ (×{DICE_PAYOUT})")
+        text = f"🎲 Выпало: <b>{result}</b>\n🎯 Твоё: <b>{num}</b>\n\n✅ <b>ПОБЕДА!</b> +{profit:.2f} ₮ (×{DICE_PAYOUT})"
     else:
-        text = (f"🎲 Выпало: <b>{result}</b>\n"
-                f"🎯 Твоё число: <b>{num}</b>\n\n"
-                f"❌ Проигрыш −{bet:.2f} ₮")
-
-    log_round(p["id"], "dice", bet,
-              {"result": result, "chosen": num, "win": win},
-              profit if win else -bet,
-              "telegram_dice", 0)
-
+        profit = -bet
+        text = f"🎲 Выпало: <b>{result}</b>\n🎯 Твоё: <b>{num}</b>\n\n❌ Проигрыш −{bet:.2f} ₮"
+    log_round(p["id"], "dice", bet, {"result": result, "chosen": num, "win": win},
+              profit, "telegram_dice", 0)
     p2 = get_or_create_profile(cb.from_user.model_dump())
     text += f"\n\n💎 Баланс: <b>{float(p2['balance']):.2f} ₮</b>"
-
     again_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎲 Ещё раз", callback_data=f"dice_bet:{int(bet)}")],
         [InlineKeyboardButton(text="💰 Пополнить", callback_data="menu:deposit"),
@@ -420,10 +459,13 @@ async def lifespan(app):
     global xrocket
     xrocket = xRocketClient(api_key=XROCKET_API_KEY)
     log.info("xrocket initialized")
-    task = asyncio.create_task(dp.start_polling(bot))
+    task_bot = asyncio.create_task(dp.start_polling(bot))
+    task_crash = asyncio.create_task(crash_loop())
     yield
-    task.cancel()
-    try: await task
+    task_bot.cancel(); task_crash.cancel()
+    try: await task_bot
+    except asyncio.CancelledError: pass
+    try: await task_crash
     except asyncio.CancelledError: pass
     await bot.session.close()
 
@@ -444,35 +486,57 @@ async def config():
 async def auth(user: dict = Depends(get_current_user)):
     return get_or_create_profile(user)
 
+
+# ---------- profile (defensive) ----------
 @app.get("/api/profile")
 async def profile(user: dict = Depends(get_current_user)):
-    p = get_or_create_profile(user)
-    s = get_user_stats(p["id"])
-    return {
-        "id": p["id"], "telegram_id": p["telegram_id"],
-        "username": p.get("username"), "first_name": p.get("first_name"),
-        "balance": float(p["balance"]),
-        "client_seed": p["client_seed"], "nonce": p["nonce"],
-        "stats": {
-            "total_games": s["games"], "total_wagered": s["bets"],
-            "total_profit": s["net"], "best_mult": 1.0,
-            "deposits": s["deposits"], "withdrawals": s["withdrawals"], "wins": s["wins"],
-        },
-    }
+    try:
+        p = get_or_create_profile(user)
+        try:
+            s = get_user_stats(p["id"])
+        except Exception:
+            log.exception("get_user_stats failed")
+            s = {"games":0,"deposits":0,"withdrawals":0,"bets":0,"wins":0,"net":0}
+        return {
+            "id": p["id"],
+            "telegram_id": p["telegram_id"],
+            "username": p.get("username"),
+            "first_name": p.get("first_name"),
+            "balance": float(p["balance"]),
+            "client_seed": p.get("client_seed") or "",
+            "nonce": int(p.get("nonce") or 0),
+            "stats": {
+                "total_games": s["games"],
+                "total_wagered": s["bets"],
+                "total_profit": s["net"],
+                "best_mult": 1.0,
+                "deposits": s["deposits"],
+                "withdrawals": s["withdrawals"],
+                "wins": s["wins"],
+            },
+        }
+    except Exception:
+        log.exception("profile endpoint failed")
+        raise HTTPException(500, "profile error")
+
 
 @app.get("/api/live")
 async def live():
-    r = supabase.table("game_rounds").select("game_type, profit, bet_amount, profiles(username, first_name)") \
-        .gt("profit", 0).order("created_at", desc=True).limit(20).execute()
-    out = []
-    for row in r.data or []:
-        pr = row.get("profiles") or {}
-        name = pr.get("first_name") or pr.get("username") or "anon"
-        mult = round((float(row["profit"]) + float(row["bet_amount"])) / float(row["bet_amount"]), 2) \
-               if float(row["bet_amount"]) else 1.0
-        out.append({"game": row["game_type"], "name": name,
-                    "profit": round(float(row["profit"]), 2), "mult": mult})
-    return out
+    try:
+        r = supabase.table("game_rounds").select("game_type, profit, bet_amount, profiles(username, first_name)") \
+            .gt("profit", 0).order("created_at", desc=True).limit(20).execute()
+        out = []
+        for row in r.data or []:
+            pr = row.get("profiles") or {}
+            name = pr.get("first_name") or pr.get("username") or "anon"
+            mult = round((float(row["profit"]) + float(row["bet_amount"])) / float(row["bet_amount"]), 2) \
+                   if float(row["bet_amount"]) else 1.0
+            out.append({"game": row["game_type"], "name": name,
+                        "profit": round(float(row["profit"]), 2), "mult": mult})
+        return out
+    except Exception:
+        log.exception("live failed")
+        return []
 
 @app.get("/api/history/games")
 async def history_games(user: dict = Depends(get_current_user)):
@@ -501,6 +565,8 @@ async def fairness(user: dict = Depends(get_current_user)):
                     "created_at": row["created_at"]})
     return out
 
+
+# ---------- payments ----------
 @app.post("/api/payments/deposit")
 async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0))
@@ -550,48 +616,129 @@ async def xrocket_webhook(request: Request):
     return {"ok": True}
 
 
-# =================== webapp games (crash/mines/roulette) ===================
-@app.post("/api/games/crash/start")
-async def crash_start(body: dict, user: dict = Depends(get_current_user)):
+# =================== GLOBAL CRASH API ===================
+@app.get("/api/crash/state")
+async def crash_state_endpoint(user: dict = Depends(get_current_user)):
+    p = get_or_create_profile(user)
+    status = crash_state["status"]
+    mult = 1.0
+    if status == "running" and crash_state["started_at"]:
+        mult = crash_mult(time.time() - crash_state["started_at"])
+    elif status == "crashed":
+        mult = crash_state["crash_point"] or 1.0
+
+    bets = []
+    my_bet = None
+    rid = crash_state["round_id"]
+    if rid:
+        r = supabase.table("crash_bets").select("user_id, username, amount, cashout_mult, payout, status") \
+            .eq("round_id", rid).order("created_at", desc=True).execute()
+        for b in r.data or []:
+            item = {
+                "user_id": b["user_id"],
+                "username": b.get("username") or "anon",
+                "amount": float(b["amount"]),
+                "cashout_mult": float(b["cashout_mult"]) if b["cashout_mult"] else None,
+                "payout": float(b["payout"] or 0),
+                "status": b["status"],
+                "is_me": b["user_id"] == p["id"],
+            }
+            bets.append(item)
+            if item["is_me"]:
+                my_bet = item
+
+    recent = supabase.table("crash_rounds").select("crash_point, created_at") \
+        .eq("status", "crashed").order("created_at", desc=True).limit(10).execute()
+
+    return {
+        "status": status,
+        "mult": mult,
+        "crash_point": crash_state["crash_point"] if status == "crashed" else None,
+        "started_at": crash_state["started_at"],
+        "betting_ends_in": max(0, (crash_state.get("betting_ends_at") or 0) - time.time()) if status == "betting" else 0,
+        "bets": bets,
+        "my_bet": my_bet,
+        "recent": [{"crash_point": float(x["crash_point"])} for x in recent.data or []],
+        "balance": float(p["balance"]),
+        "round_id": rid,
+    }
+
+@app.post("/api/crash/bet")
+async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
+    if crash_state["status"] != "betting":
+        raise HTTPException(400, "ставки закрыты")
     bet = float(body.get("bet", 0))
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = get_or_create_profile(user)
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    if get_active_round(p["id"]): raise HTTPException(400, "active round exists")
-    ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
+    rid = crash_state["round_id"]
+    ex = supabase.table("crash_bets").select("id").eq("round_id", rid).eq("user_id", p["id"]).execute()
+    if ex.data: raise HTTPException(400, "ты уже сделал ставку в этом раунде")
     supabase.rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet}).execute()
-    supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]).execute()
-    supabase.table("active_rounds").insert({
-        "user_id": p["id"], "game_type": "crash", "bet_amount": bet,
-        "state": {"started_at": time.time()}, "server_seed": ss, "nonce": nonce,
+    supabase.table("crash_bets").insert({
+        "round_id": rid, "user_id": p["id"],
+        "username": p.get("first_name") or p.get("username") or "anon",
+        "amount": bet, "status": "active",
     }).execute()
     supabase.table("transactions").insert({
         "user_id": p["id"], "type": "bet", "amount": bet,
-        "currency": "USDT", "status": "completed", "meta": {"game": "crash"},
+        "currency": "USDT", "status": "completed", "meta": {"game": "crash_global"},
     }).execute()
-    return {"ok": True, "started_at": time.time()}
+    return {"ok": True}
 
-@app.post("/api/games/crash/cashout")
-async def crash_cashout(user: dict = Depends(get_current_user)):
+@app.post("/api/crash/cashout")
+async def crash_cashout_global(user: dict = Depends(get_current_user)):
+    if crash_state["status"] != "running":
+        raise HTTPException(400, "раунд не идёт")
+    elapsed = time.time() - crash_state["started_at"]
+    mult = crash_mult(elapsed)
+    if mult >= crash_state["crash_point"]:
+        raise HTTPException(400, "слишком поздно — краш уже случился")
     p = get_or_create_profile(user)
-    ar = get_active_round(p["id"])
-    if not ar or ar["game_type"] != "crash": raise HTTPException(400, "no active crash round")
-    elapsed = time.time() - float(ar["state"]["started_at"])
-    cm = crash_mult(elapsed); cp = crash_point(ar["server_seed"], p["client_seed"], ar["nonce"])
-    bet = float(ar["bet_amount"])
-    if cm >= cp:
-        log_round(p["id"], "crash", bet, {"crashed_at": cp}, -bet, ar["server_seed"], ar["nonce"])
-        clear_active_round(p["id"]); return {"ok": True, "lost": True, "crash_point": cp}
-    payout = round(bet * cm, 8); profit = round(payout - bet, 8)
+    rid = crash_state["round_id"]
+    b = supabase.table("crash_bets").select("*").eq("round_id", rid).eq("user_id", p["id"]) \
+        .eq("status", "active").execute()
+    if not b.data: raise HTTPException(400, "нет активной ставки")
+    bet = b.data[0]
+    amount = float(bet["amount"])
+    payout = round(amount * mult, 8)
+    profit = round(payout - amount, 8)
+    supabase.table("crash_bets").update({
+        "status": "cashed", "cashout_mult": mult, "payout": payout,
+    }).eq("id", bet["id"]).execute()
     supabase.rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout}).execute()
-    log_round(p["id"], "crash", bet, {"mult": cm}, profit, ar["server_seed"], ar["nonce"])
     supabase.table("transactions").insert({
         "user_id": p["id"], "type": "win", "amount": profit,
-        "currency": "USDT", "status": "completed", "meta": {"game": "crash"},
+        "currency": "USDT", "status": "completed", "meta": {"game": "crash_global"},
     }).execute()
-    clear_active_round(p["id"])
-    return {"ok": True, "lost": False, "mult": cm, "payout": payout, "profit": profit}
+    log_round(p["id"], "crash", amount, {"global": True, "mult": mult, "round": rid},
+              profit, crash_state["server_seed"] or "", 0)
+    return {"ok": True, "mult": mult, "payout": payout, "profit": profit}
 
+
+# =================== ROULETTE SHARED BETS ===================
+@app.get("/api/roulette/bets")
+async def roulette_bets():
+    r = supabase.table("game_rounds") \
+        .select("result, bet_amount, profit, profiles(username, first_name)") \
+        .eq("game_type", "roulette").order("created_at", desc=True).limit(25).execute()
+    out = []
+    for row in r.data or []:
+        pr = row.get("profiles") or {}
+        name = pr.get("first_name") or pr.get("username") or "anon"
+        res = row.get("result") or {}
+        out.append({
+            "name": name,
+            "number": res.get("n"),
+            "bet_type": res.get("bet_type"),
+            "win": bool(res.get("win", False)),
+            "amount": float(row["bet_amount"]),
+            "profit": float(row["profit"]),
+        })
+    return out
+
+
+# =================== MINES / ROULETTE (per-player) ===================
 @app.post("/api/games/mines/start")
 async def mines_start(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0)); mines = int(body.get("mines", 3))
@@ -665,7 +812,6 @@ async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
     p = get_or_create_profile(user)
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    if get_active_round(p["id"]): raise HTTPException(400, "active round exists")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     n = roulette_number(ss, p["client_seed"], nonce)
     supabase.rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet}).execute()
@@ -679,6 +825,7 @@ async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
         d = {"dozen1": range(1,13), "dozen2": range(13,25), "dozen3": range(25,37)}[bt]
         if n in d: win, pm = True, 3.0
     elif bt == "number" and int(bv) == n: win, pm = True, 36.0
+    profit = -bet
     if win:
         payout = round(bet * pm, 8); profit = round(payout - bet, 8)
         supabase.rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout}).execute()
@@ -686,7 +833,6 @@ async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
             "user_id": p["id"], "type": "win", "amount": profit,
             "currency": "USDT", "status": "completed", "meta": {"game": "roulette"},
         }).execute()
-    else: profit = -bet
     log_round(p["id"], "roulette", bet, {"n": n, "bet_type": bt, "win": win}, profit, ss, nonce)
     color = "green" if n == 0 else ("red" if n in RED else "black")
     return {"ok": True, "number": n, "color": color, "win": win,
