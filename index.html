@@ -13,6 +13,7 @@
   .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
   .grad { background:linear-gradient(135deg,#7c3aed 0%,#3b82f6 100%); }
   .grad-pink { background:linear-gradient(135deg,#ec4899 0%,#8b5cf6 100%); }
+  .grad-gold { background:linear-gradient(135deg,#f59e0b 0%,#ef4444 100%); }
   @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:.7} }
   .pulse-slow { animation:pulse-slow 2s ease-in-out infinite; }
   @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.15)} 100%{transform:scale(1)} }
@@ -20,24 +21,20 @@
   .cell { transition:background .15s, transform .1s; }
   .cell:active { transform:scale(.95); }
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
-
   .wheel-wrap { position:relative; width:240px; height:240px; margin:0 auto; }
-  .wheel-pointer {
-    position:absolute; top:-8px; left:50%; transform:translateX(-50%);
+  .wheel-pointer { position:absolute; top:-8px; left:50%; transform:translateX(-50%);
     width:0; height:0; border-left:11px solid transparent; border-right:11px solid transparent;
-    border-top:18px solid #facc15; z-index:3; filter:drop-shadow(0 0 6px rgba(250,204,21,.6));
-  }
+    border-top:18px solid #facc15; z-index:3; filter:drop-shadow(0 0 6px rgba(250,204,21,.6)); }
   .wheel { width:100%; height:100%; border-radius:50%;
     transition:transform 4.5s cubic-bezier(.17,.67,.12,.99);
-    box-shadow: 0 0 0 6px rgba(255,255,255,.08), 0 0 40px rgba(124,58,237,.4);
-    position:relative; }
-  .wheel-center {
-    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
-    width:60px; height:60px; border-radius:50%;
-    background:#0f0f1e; border:2px solid rgba(255,255,255,.25);
-    display:flex; align-items:center; justify-content:center;
-    font-weight:900; font-size:22px; z-index:2; color:#fff;
+    box-shadow: 0 0 0 6px rgba(255,255,255,.08), 0 0 40px rgba(124,58,237,.4); position:relative; }
+  .wheel-center { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:60px; height:60px; border-radius:50%; background:#0f0f1e;
+    border:2px solid rgba(255,255,255,.25); display:flex; align-items:center;
+    justify-content:center; font-weight:900; font-size:22px; z-index:2; color:#fff;
     box-shadow:inset 0 0 12px rgba(0,0,0,.6); }
+  .rtp-badge { background:rgba(34,197,94,.15); color:#4ade80; font-size:10px;
+    padding:2px 6px; border-radius:6px; font-weight:700; }
 </style>
 </head>
 <body class="text-white min-h-screen">
@@ -68,7 +65,10 @@
   </section>
 
   <section class="mt-6">
-    <h2 class="text-xl font-black mb-3">Игры</h2>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xl font-black">Игры</h2>
+      <button id="btn-rules-all" class="text-xs text-gray-400 underline">Правила</button>
+    </div>
     <div id="games" class="flex flex-col gap-4"></div>
   </section>
 </main>
@@ -78,13 +78,13 @@
     <button class="nav-tab flex flex-col items-center gap-1 text-yellow-400" data-tab="games">
       <span class="text-lg">🎮</span><span class="text-[10px] font-semibold">Игры</span>
     </button>
-    <button id="btn-fair" class="nav-tab flex flex-col items-center gap-1 text-gray-400" data-tab="fair">
-      <span class="text-lg">🛡</span><span class="text-[10px] font-semibold">Честность</span>
+    <button id="btn-top" class="nav-tab flex flex-col items-center gap-1 text-gray-400">
+      <span class="text-lg">🏆</span><span class="text-[10px] font-semibold">Топ</span>
     </button>
-    <button id="btn-history" class="nav-tab flex flex-col items-center gap-1 text-gray-400" data-tab="history">
-      <span class="text-lg">📜</span><span class="text-[10px] font-semibold">История</span>
+    <button id="btn-bonus" class="nav-tab flex flex-col items-center gap-1 text-gray-400">
+      <span class="text-lg">🎁</span><span class="text-[10px] font-semibold">Бонус</span>
     </button>
-    <button id="btn-profile" class="nav-tab flex flex-col items-center gap-1 text-gray-400" data-tab="profile">
+    <button id="btn-profile" class="nav-tab flex flex-col items-center gap-1 text-gray-400">
       <span class="text-lg">👤</span><span class="text-[10px] font-semibold">Профиль</span>
     </button>
   </div>
@@ -158,8 +158,46 @@
       <h3 class="text-xl font-black">Проверка честности</h3>
       <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
     </div>
-    <p class="text-xs text-gray-400 mb-3">HMAC-SHA256(server_seed, client_seed:nonce).</p>
+    <p class="text-xs text-gray-400 mb-3">HMAC-SHA256(server_seed, client_seed:nonce). Нажми «Проверить» — сервер пересчитает результат.</p>
     <div id="fair-body" class="space-y-2"></div>
+  </div>
+</div>
+
+<!-- TOP -->
+<div id="modal-top" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
+  <div class="w-full glass rounded-t-3xl p-5 pb-8 max-h-[90vh] overflow-y-auto no-scrollbar">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-xl font-black">Топ игроков</h3>
+      <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
+    </div>
+    <div class="flex gap-2 mb-3">
+      <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold" data-p="day">День</button>
+      <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold bg-white/10" data-p="week">Неделя</button>
+      <button class="lb-tab flex-1 glass rounded-xl py-2 text-sm font-semibold" data-p="month">Месяц</button>
+    </div>
+    <div id="top-body" class="space-y-2"></div>
+  </div>
+</div>
+
+<!-- BONUS -->
+<div id="modal-bonus" class="fixed inset-0 z-50 hidden bg-black/70 items-end">
+  <div class="w-full glass rounded-t-3xl p-5 pb-8 max-h-[90vh] overflow-y-auto no-scrollbar">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-xl font-black">Бонус и друзья</h3>
+      <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
+    </div>
+    <div id="bonus-body" class="space-y-3"></div>
+  </div>
+</div>
+
+<!-- RULES -->
+<div id="modal-rules" class="fixed inset-0 z-50 hidden bg-black/80 items-end">
+  <div class="w-full glass rounded-t-3xl p-5 pb-8 max-h-[90vh] overflow-y-auto no-scrollbar">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-xl font-black">Правила и RTP</h3>
+      <button class="close-modal text-gray-400 text-2xl leading-none">×</button>
+    </div>
+    <div id="rules-body" class="space-y-3 text-sm"></div>
   </div>
 </div>
 
@@ -167,7 +205,10 @@
 <div id="modal-game" class="fixed inset-0 z-50 hidden bg-[#0f0f1e] flex-col">
   <div class="flex items-center justify-between p-4 border-b border-white/5">
     <h3 id="game-title" class="text-xl font-black">Игра</h3>
-    <button class="close-modal text-gray-400 text-3xl leading-none">×</button>
+    <div class="flex items-center gap-2">
+      <button id="btn-rules-game" class="text-xs text-gray-400 underline">Правила</button>
+      <button class="close-modal text-gray-400 text-3xl leading-none">×</button>
+    </div>
   </div>
   <div id="game-body" class="flex-1 overflow-y-auto no-scrollbar p-4"></div>
 </div>
@@ -180,7 +221,12 @@ const tg = window.Telegram.WebApp;
 tg.ready(); tg.expand();
 
 let profile = null;
-let cfg = { min_bet: 0.1, max_bet: 1000, min_deposit: 0.1, min_withdraw: 0.5, withdraw_cooldown_min: 15 };
+let cfg = {
+  min_bet: 0.1, max_bet: 1000, min_deposit: 0.1, min_withdraw: 0.5,
+  withdraw_cooldown_min: 15, max_withdraw_daily: 500,
+  referral_share: 0.05, daily_bonus: 0.5, rtp: 0.96,
+  payouts: { dice: 5.76, roulette_rb: 1.92, roulette_dozen: 2.88, roulette_number: 34.56 },
+};
 let currentGame = null;
 let crashPoll = null, crashLocalAnim = null;
 
@@ -214,13 +260,12 @@ function close(id){
   }
 }
 document.querySelectorAll(".close-modal").forEach(b => b.addEventListener("click", e => {
-  const m = e.target.closest(".fixed");
-  close(m.id);
+  const m = e.target.closest(".fixed"); close(m.id);
 }));
 
 // ============ init ============
 async function init() {
-  try { cfg = await api("/api/config"); } catch {}
+  try { cfg = {...cfg, ...(await api("/api/config"))}; } catch {}
   try {
     profile = await api("/api/profile");
     renderProfile();
@@ -240,7 +285,7 @@ function updateBalance(v) {
 }
 function updateWithdrawNote() {
   document.getElementById("withdraw-note").innerHTML =
-    `Мин: ${cfg.min_withdraw} ₮ · Макс: ${cfg.max_bet} ₮ · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
+    `Мин: ${cfg.min_withdraw} ₮ · Лимит/сутки: ${cfg.max_withdraw_daily} ₮ · Кулдаун: ${cfg.withdraw_cooldown_min} мин.`;
 }
 
 // ============ LIVE ============
@@ -265,21 +310,163 @@ async function loadLive() {
 
 // ============ GAMES ============
 const games = [
-  { id:"crash", title:"Crash", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=CRASH" },
-  { id:"mines", title:"Mines", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=MINES" },
-  { id:"roulette", title:"Roulette", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=ROULETTE" },
+  { id:"crash", title:"Crash", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=CRASH", rtp:"96%" },
+  { id:"mines", title:"Mines", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=MINES", rtp:"96%" },
+  { id:"roulette", title:"Roulette", img:"https://placehold.co/600x300/1a1a2e/ffffff?text=ROULETTE", rtp:"96%" },
 ];
 function renderGames() {
   document.getElementById("games").innerHTML = games.map(g => `
     <button class="game-card text-left rounded-3xl overflow-hidden relative" data-id="${g.id}" data-title="${g.title}">
       <img src="${g.img}" class="w-full h-40 object-cover opacity-90">
       <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent"></div>
+      <div class="absolute top-3 left-3 rtp-badge">RTP ${g.rtp}</div>
       <div class="absolute bottom-3 left-3 right-3 flex items-end justify-between">
         <div class="text-2xl font-black">${g.title}</div>
         <div class="grad rounded-full px-4 py-1.5 text-sm font-bold">Играть</div>
       </div>
     </button>`).join("");
 }
+
+// ============ LEADERBOARD ============
+async function loadLeaderboard(period="week") {
+  const body = document.getElementById("top-body");
+  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  try {
+    const data = await api(`/api/leaderboard?period=${period}`);
+    if (!data.items.length) { body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Пока пусто</div>`; return; }
+    const medals = ["🥇","🥈","🥉"];
+    body.innerHTML = data.items.map((it, i) => `
+      <div class="flex items-center justify-between glass rounded-2xl px-3 py-2">
+        <div class="flex items-center gap-3">
+          <div class="w-8 text-center text-lg font-black ${i<3?'':'text-gray-500'}">${medals[i] || (i+1)}</div>
+          <div>
+            <div class="font-bold text-sm">${it.name}</div>
+            <div class="text-[10px] text-gray-400">${it.games} игр · оборот ${it.bets} ₮</div>
+          </div>
+        </div>
+        <div class="font-bold ${it.profit >= 0 ? 'text-green-400' : 'text-red-400'}">
+          ${it.profit >= 0 ? '+' : ''}${it.profit} ₮
+        </div>
+      </div>`).join("");
+  } catch (e) { body.innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
+}
+
+// ============ BONUS + REFERRAL ============
+async function openBonus() {
+  const body = document.getElementById("bonus-body");
+  body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Загрузка…</div>`;
+  try {
+    const [p, ref] = await Promise.all([api("/api/profile"), api("/api/referral")]);
+    profile = p;
+    const b = p.bonus || { available: false, seconds_left: 0 };
+    const bonusBlock = b.available
+      ? `<button id="bonus-claim-btn" class="grad-gold w-full rounded-2xl py-3.5 font-bold text-lg">🎁 Забрать ${cfg.daily_bonus} ₮</button>`
+      : `<div class="glass rounded-2xl p-3 text-center text-sm">
+           Следующий бонус через <b>${Math.floor(b.seconds_left/3600)}ч ${Math.floor((b.seconds_left%3600)/60)}м</b>
+         </div>`;
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(ref.link)}&text=${encodeURIComponent("Играю в GoldCash, залетай!")}`;
+    body.innerHTML = `
+      <div class="glass rounded-2xl p-4">
+        <div class="text-sm text-gray-400 mb-1">🎁 Ежедневный бонус</div>
+        <div class="text-2xl font-black mb-3">${cfg.daily_bonus} ₮ / день</div>
+        ${bonusBlock}
+      </div>
+      <div class="glass rounded-2xl p-4">
+        <div class="text-sm text-gray-400 mb-1">👥 Приглашай друзей — получай <b>${(cfg.referral_share*100).toFixed(0)}%</b> от их проигрыша</div>
+        <div class="flex items-center justify-between mt-2 text-sm">
+          <div>Приглашено: <b>${ref.invited_count}</b></div>
+          <div>Заработано: <b class="text-green-400">${ref.earnings.toFixed(2)} ₮</b></div>
+        </div>
+        <div class="mt-3 text-[10px] text-gray-500 break-all">${ref.link}</div>
+        <div class="grid grid-cols-2 gap-2 mt-3">
+          <button id="ref-copy" class="glass rounded-xl py-2 text-sm font-bold">Скопировать</button>
+          <a href="${shareUrl}" class="grad rounded-xl py-2 text-sm font-bold text-center">Поделиться</a>
+        </div>
+      </div>
+      ${ref.invited.length ? `
+        <div class="glass rounded-2xl p-3">
+          <div class="text-sm font-bold mb-2">Последние рефералы</div>
+          <div class="space-y-1">
+            ${ref.invited.slice(0,10).map(u => `
+              <div class="flex justify-between text-xs">
+                <span>${u.name}</span>
+                <span class="text-gray-500">${new Date(u.joined).toLocaleDateString("ru-RU")}</span>
+              </div>`).join("")}
+          </div>
+        </div>` : ""}
+      <div class="glass rounded-2xl p-3">
+        <div class="text-sm font-bold mb-2">🎟 Промокод</div>
+        <div class="flex gap-2">
+          <input id="promo-input" placeholder="ВВЕДИ КОД" class="flex-1 bg-white/5 rounded-xl px-3 py-2 text-sm uppercase outline-none border border-white/10 focus:border-purple-500">
+          <button id="promo-redeem" class="grad rounded-xl px-4 font-bold text-sm">Активировать</button>
+        </div>
+      </div>`;
+    document.getElementById("bonus-claim-btn")?.addEventListener("click", async () => {
+      haptic("medium");
+      try {
+        const r = await api("/api/bonus/claim", { method:"POST" });
+        toast(`🎁 +${r.amount} ₮`);
+        updateBalance(num(profile.balance) + num(r.amount));
+        openBonus();
+      } catch (e) { toast(e.message); }
+    });
+    document.getElementById("ref-copy")?.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(ref.link); toast("Ссылка скопирована"); }
+      catch { toast("Скопируй вручную"); }
+    });
+    document.getElementById("promo-redeem")?.addEventListener("click", async () => {
+      const code = document.getElementById("promo-input").value.trim().toUpperCase();
+      if (!code) return toast("Введи код");
+      try {
+        const r = await api("/api/promo/redeem", { method:"POST", body:JSON.stringify({ code }) });
+        toast(`✅ +${r.amount} ₮`);
+        updateBalance(num(profile.balance) + num(r.amount));
+        openBonus();
+      } catch (e) { toast(e.message); }
+    });
+  } catch (e) { body.innerHTML = `<div class="text-red-400 p-4">${e.message}</div>`; }
+}
+
+// ============ RULES ============
+const RULES = {
+  crash: `
+    <b>💥 Crash</b><br>
+    Множитель растёт с 1.00x. Забирай до того, как он обрушится.<br><br>
+    <b>Формула:</b> краш-точка = (1 - house edge) / (1 - r), где r — случайное из Provably Fair.<br>
+    <b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%<br>
+    <b>Стратегия:</b> чем дольше держишь — тем выше множитель и риск.
+  `,
+  mines: `
+    <b>💎 Mines</b><br>
+    Поле 5×5. Под клетками — мины. Открывай безопасные, множитель растёт.<br><br>
+    <b>Множитель:</b> (1 - house edge) / P(безопасно k из 25)<br>
+    <b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%<br>
+    <b>Чем больше мин</b> — тем выше множитель, но и риск выше.
+  `,
+  roulette: `
+    <b>🎡 Рулетка (европейская)</b><br>
+    Числа 0–36. Ставки:<br>
+    • Красное/Чёрное/Чёт/Нечёт — ×${cfg.payouts.roulette_rb}<br>
+    • Дюжины — ×${cfg.payouts.roulette_dozen}<br>
+    • Число — ×${cfg.payouts.roulette_number}<br><br>
+    <b>RTP:</b> ${(cfg.rtp*100).toFixed(0)}%<br>
+    <b>Совет:</b> на длинной дистанции выигрывает казино, но есть шанс на крупный занос.
+  `,
+  dice: `
+    <b>🎲 Кубик (в боте)</b><br>
+    Выбери число 1–6. Бот бросит кубик Telegram.<br>
+    Если выпадет твоё — выплата ×${cfg.payouts.dice}.<br><br>
+    <b>RTP:</b> ${(cfg.payouts.dice/6*100).toFixed(2)}%
+  `,
+};
+function openRules(game) {
+  const body = document.getElementById("rules-body");
+  const items = game ? [game] : ["crash","mines","roulette","dice"];
+  body.innerHTML = items.map(g => `<div class="glass rounded-2xl p-3">${RULES[g]}</div>`).join("");
+  open("modal-rules");
+}
+document.getElementById("btn-rules-all").onclick = () => openRules();
+document.getElementById("btn-rules-game").onclick = () => openRules(currentGame);
 
 // ============ HISTORY ============
 async function loadHistory(tab="games") {
@@ -305,9 +492,10 @@ async function loadHistory(tab="games") {
     } else {
       const data = await api("/api/history/transactions");
       if (!data.length) { body.innerHTML = `<div class="text-center text-gray-500 text-sm py-6">Пусто</div>`; return; }
-      const L = { deposit:"📥 Депозит", withdraw:"📤 Вывод", bet:"🎯 Ставка", win:"🏆 Выигрыш" };
+      const L = { deposit:"📥 Депозит", withdraw:"📤 Вывод", bet:"🎯 Ставка", win:"🏆 Выигрыш",
+                  admin:"🛡 Админ", bonus:"🎁 Бонус", ref_reward:"👥 Реферал" };
       body.innerHTML = data.map(r => {
-        const plus = ["deposit","win"].includes(r.type);
+        const plus = ["deposit","win","bonus","ref_reward"].includes(r.type);
         return `<div class="glass rounded-2xl px-3 py-2 flex justify-between items-center text-sm">
           <div>
             <div class="font-bold">${L[r.type] || r.type}</div>
@@ -336,7 +524,20 @@ async function loadFairness() {
         <div class="text-gray-500">${new Date(r.created_at).toLocaleString("ru-RU")} · nonce ${r.nonce ?? '—'}</div>
         <div class="font-mono break-all text-[10px] text-gray-400">seed: ${r.server_seed || '—'}</div>
         <div class="font-mono break-all text-[10px] text-gray-500">sha256: ${r.server_seed_hash || '—'}</div>
+        <button class="verify-btn grad rounded-lg px-3 py-1.5 text-xs font-bold mt-1" data-id="${r.id}">Проверить</button>
+        <div class="verify-out text-[11px] mt-1"></div>
       </div>`).join("");
+    body.querySelectorAll(".verify-btn").forEach(b => b.onclick = async () => {
+      const out = b.parentElement.querySelector(".verify-out");
+      out.innerHTML = "Проверка…";
+      try {
+        const v = await api(`/api/fairness/verify/${b.dataset.id}`);
+        out.innerHTML = `
+          <div class="text-gray-400">Пересчитано:</div>
+          <div class="font-mono text-[10px] break-all">${JSON.stringify(v.recomputed)}</div>
+          <div class="text-green-400 font-bold mt-1">✔ Совпадает</div>`;
+      } catch (e) { out.innerHTML = `<span class="text-red-400">${e.message}</span>`; }
+    });
   } catch (e) { body.innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
 }
 
@@ -388,14 +589,19 @@ async function openProfile() {
         <div class="text-gray-400 font-bold mb-1">🛡 Provably Fair</div>
         <div><span class="text-gray-400">client_seed:</span> <span class="font-mono break-all">${p.client_seed || "—"}</span></div>
         <div><span class="text-gray-400">nonce:</span> ${p.nonce ?? 0}</div>
+        <div><span class="text-gray-400">👥 реф-заработок:</span> ${num(p.ref_earnings).toFixed(2)} ₮</div>
       </div>
       <div class="grid grid-cols-2 gap-2">
-        <button id="btn-withdraw-2" class="grad w-full rounded-2xl py-3 font-bold">Вывести</button>
-        <button id="btn-deposit-2" class="glass w-full rounded-2xl py-3 font-bold">Пополнить</button>
+        <button id="p-withdraw" class="grad w-full rounded-2xl py-3 font-bold">Вывести</button>
+        <button id="p-deposit" class="glass w-full rounded-2xl py-3 font-bold">Пополнить</button>
+        <button id="p-history" class="glass w-full rounded-2xl py-3 font-bold">История</button>
+        <button id="p-fair" class="glass w-full rounded-2xl py-3 font-bold">Честность</button>
       </div>
     `;
-    document.getElementById("btn-withdraw-2").onclick = () => { close("modal-profile"); open("modal-withdraw"); };
-    document.getElementById("btn-deposit-2").onclick = () => { close("modal-profile"); open("modal-deposit"); };
+    document.getElementById("p-withdraw").onclick = () => { close("modal-profile"); open("modal-withdraw"); };
+    document.getElementById("p-deposit").onclick = () => { close("modal-profile"); open("modal-deposit"); };
+    document.getElementById("p-history").onclick = () => { close("modal-profile"); open("modal-history"); loadHistory("games"); };
+    document.getElementById("p-fair").onclick = () => { close("modal-profile"); open("modal-fair"); loadFairness(); };
   } catch (e) { body.innerHTML = `<div class="text-red-400 p-4">${e.message}</div>`; }
 }
 
@@ -427,12 +633,16 @@ document.getElementById("do-withdraw").onclick = async () => {
 };
 
 // ============ NAV ============
-document.getElementById("btn-history").onclick = () => { open("modal-history"); loadHistory("games"); };
+document.getElementById("btn-top").onclick = () => { open("modal-top"); loadLeaderboard("week"); };
+document.getElementById("btn-bonus").onclick = () => { open("modal-bonus"); openBonus(); };
 document.getElementById("btn-profile").onclick = () => { open("modal-profile"); openProfile(); };
-document.getElementById("btn-fair").onclick = () => { open("modal-fair"); loadFairness(); };
 document.querySelectorAll(".hist-tab").forEach(b => b.onclick = () => {
   document.querySelectorAll(".hist-tab").forEach(x => x.classList.remove("bg-white/10"));
   b.classList.add("bg-white/10"); loadHistory(b.dataset.t);
+});
+document.querySelectorAll(".lb-tab").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".lb-tab").forEach(x => x.classList.remove("bg-white/10"));
+  b.classList.add("bg-white/10"); loadLeaderboard(b.dataset.p);
 });
 
 // ============ GAME LAUNCHER ============
@@ -461,13 +671,13 @@ function betInputRow(id="bet-input", val=0.5) {
       ${[0.1,0.5,1,5,10].map(v=>`<button class="bet-quick flex-1 glass rounded-lg py-1.5 text-xs font-semibold" data-v="${v}">${v}</button>`).join("")}
     </div>`;
 }
-function wireBet(scope, getEl, onChange) {
+function wireBet(scope, getEl) {
   scope.querySelectorAll(".bet-quick").forEach(b =>
-    b.onclick = () => { getEl().value = Math.min(cfg.max_bet, b.dataset.v); onChange?.(); });
+    b.onclick = () => { getEl().value = Math.min(cfg.max_bet, b.dataset.v); });
   scope.querySelector(".bet-minus")?.addEventListener("click", () => {
-    getEl().value = Math.max(cfg.min_bet, +(Number(getEl().value||cfg.min_bet) - 0.1).toFixed(2)); onChange?.(); });
+    getEl().value = Math.max(cfg.min_bet, +(Number(getEl().value||cfg.min_bet) - 0.1).toFixed(2)); });
   scope.querySelector(".bet-plus")?.addEventListener("click", () => {
-    getEl().value = Math.min(cfg.max_bet, +(Number(getEl().value||cfg.min_bet) + 0.1).toFixed(2)); onChange?.(); });
+    getEl().value = Math.min(cfg.max_bet, +(Number(getEl().value||cfg.min_bet) + 0.1).toFixed(2)); });
 }
 function validateBet(v) {
   if (!v || v < cfg.min_bet) { toast(`Мин. ставка ${cfg.min_bet}`); return false; }
@@ -481,13 +691,11 @@ function renderCrash() {
   body.innerHTML = `
     <div class="flex flex-col h-full gap-3">
       <div id="crash-history" class="flex gap-1.5 overflow-x-auto no-scrollbar"></div>
-
       <div id="crash-stage" class="relative rounded-3xl bg-gradient-to-b from-purple-900/40 to-black/40 flex flex-col items-center justify-center min-h-[220px] overflow-hidden">
         <div id="crash-mult" class="text-6xl font-black tabular-nums">1.00x</div>
         <div id="crash-status" class="mt-2 text-sm text-gray-400">Подключение…</div>
         <div id="crash-timer" class="text-xs text-gray-500 mt-1"></div>
       </div>
-
       <div id="crash-betbox">
         <div id="crash-betbox-inner">
           ${betInputRow("crash-bet", 0.5)}
@@ -496,20 +704,16 @@ function renderCrash() {
         <button id="crash-cashout-btn" class="hidden bg-green-600 w-full rounded-2xl py-3.5 font-bold text-lg mt-3">Забрать</button>
         <div id="crash-my-status" class="text-center text-sm mt-2 text-gray-400"></div>
       </div>
-
       <div>
         <div class="text-sm font-bold mb-2">Ставки в этом раунде (<span id="crash-bets-count">0</span>)</div>
         <div id="crash-bets-list" class="space-y-1.5 max-h-[240px] overflow-y-auto no-scrollbar"></div>
       </div>
     </div>`;
-
   const betEl = () => body.querySelector("#crash-bet");
   wireBet(body, betEl);
-
   refreshCrashState();
   if (crashPoll) clearInterval(crashPoll);
   crashPoll = setInterval(refreshCrashState, 700);
-
   body.querySelector("#crash-bet-btn").onclick = async () => {
     const bet = Number(betEl().value);
     if (!validateBet(bet)) return;
@@ -531,14 +735,12 @@ function renderCrash() {
     } catch (e) { toast(e.message); }
   };
 }
-
 async function refreshCrashState() {
   try {
     const st = await api("/api/crash/state");
     if (currentGame !== "crash") return;
     const body = document.getElementById("game-body");
     if (!body) return;
-
     const hist = body.querySelector("#crash-history");
     if (hist) {
       const pills = (st.recent || []).map(r => {
@@ -548,14 +750,12 @@ async function refreshCrashState() {
       }).join("");
       hist.innerHTML = pills || `<span class="text-xs text-gray-500">Ещё нет раундов</span>`;
     }
-
     const multEl = body.querySelector("#crash-mult");
     const statusEl = body.querySelector("#crash-status");
     const timerEl = body.querySelector("#crash-timer");
     const betBox = body.querySelector("#crash-betbox-inner");
     const cashBtn = body.querySelector("#crash-cashout-btn");
     const myStatus = body.querySelector("#crash-my-status");
-
     if (st.status === "running") {
       const startedAt = st.started_at;
       if (startedAt) {
@@ -585,28 +785,17 @@ async function refreshCrashState() {
       if (multEl) multEl.innerText = "1.00x";
       statusEl.innerText = "Ожидание…";
     }
-
     const my = st.my_bet;
     const canBet = st.status === "betting" && !my;
     const canCash = st.status === "running" && my && my.status === "active";
-
     betBox.classList.toggle("hidden", !canBet);
     cashBtn.classList.toggle("hidden", !canCash);
-
     if (my) {
-      if (my.status === "active") {
-        myStatus.innerHTML = `<span class="text-yellow-400">Твоя ставка: ${num(my.amount).toFixed(2)} ₮ · ждём множитель</span>`;
-      } else if (my.status === "cashed") {
-        myStatus.innerHTML = `<span class="text-green-400">✅ Забрано на ×${num(my.cashout_mult).toFixed(2)} · +${num(my.payout - my.amount).toFixed(2)} ₮</span>`;
-      } else if (my.status === "lost") {
-        myStatus.innerHTML = `<span class="text-red-400">❌ Ставка ${num(my.amount).toFixed(2)} ₮ сгорела</span>`;
-      }
-    } else if (st.status === "running") {
-      myStatus.innerHTML = `<span class="text-gray-500">Ты не в этом раунде</span>`;
-    } else {
-      myStatus.innerHTML = "";
-    }
-
+      if (my.status === "active") myStatus.innerHTML = `<span class="text-yellow-400">Твоя ставка: ${num(my.amount).toFixed(2)} ₮ · ждём множитель</span>`;
+      else if (my.status === "cashed") myStatus.innerHTML = `<span class="text-green-400">✅ Забрано на ×${num(my.cashout_mult).toFixed(2)} · +${num(my.payout - my.amount).toFixed(2)} ₮</span>`;
+      else if (my.status === "lost") myStatus.innerHTML = `<span class="text-red-400">❌ Ставка ${num(my.amount).toFixed(2)} ₮ сгорела</span>`;
+    } else if (st.status === "running") myStatus.innerHTML = `<span class="text-gray-500">Ты не в этом раунде</span>`;
+    else myStatus.innerHTML = "";
     const listEl = body.querySelector("#crash-bets-list");
     const countEl = body.querySelector("#crash-bets-count");
     if (countEl) countEl.innerText = String((st.bets || []).length);
@@ -615,11 +804,10 @@ async function refreshCrashState() {
         listEl.innerHTML = `<div class="text-gray-500 text-sm text-center py-3">Пока никто не поставил</div>`;
       } else {
         listEl.innerHTML = st.bets.map(b => {
-          let right = "";
-          let statusCls = "text-gray-400";
-          if (b.status === "active") { right = `${num(b.amount).toFixed(2)} ₮`; statusCls = "text-yellow-400"; }
-          else if (b.status === "cashed") { right = `×${num(b.cashout_mult).toFixed(2)} → +${num(b.payout - b.amount).toFixed(2)}`; statusCls = "text-green-400"; }
-          else if (b.status === "lost") { right = `−${num(b.amount).toFixed(2)}`; statusCls = "text-red-400"; }
+          let right = ""; let cls = "text-gray-400";
+          if (b.status === "active") { right = `${num(b.amount).toFixed(2)} ₮`; cls = "text-yellow-400"; }
+          else if (b.status === "cashed") { right = `×${num(b.cashout_mult).toFixed(2)} → +${num(b.payout - b.amount).toFixed(2)}`; cls = "text-green-400"; }
+          else if (b.status === "lost") { right = `−${num(b.amount).toFixed(2)}`; cls = "text-red-400"; }
           return `<div class="flex items-center justify-between glass rounded-xl px-3 py-2 text-sm ${b.is_me?'ring-1 ring-yellow-400/40':''}">
             <div class="flex items-center gap-2">
               <div class="w-7 h-7 rounded-full grad flex items-center justify-center text-xs font-bold">
@@ -627,12 +815,11 @@ async function refreshCrashState() {
               </div>
               <span class="font-semibold">${b.username}${b.is_me?' <span class="text-yellow-400">(ты)</span>':''}</span>
             </div>
-            <div class="${statusCls} font-bold">${right}</div>
+            <div class="${cls} font-bold">${right}</div>
           </div>`;
         }).join("");
       }
     }
-
     updateBalance(num(st.balance));
   } catch (e) {}
 }
@@ -664,7 +851,6 @@ function renderMines() {
   const betEl = () => body.querySelector("#mines-bet");
   wireBet(body, betEl);
   const grid = body.querySelector("#mines-grid");
-
   function renderGrid(revealed=[], positions=null, lost=false) {
     grid.innerHTML = Array.from({length:25}, (_,i) => {
       const r = revealed.includes(i);
@@ -678,7 +864,6 @@ function renderMines() {
     }).join("");
   }
   renderGrid();
-
   body.querySelectorAll(".mines-count").forEach(b => b.onclick = () => {
     if (!body.querySelector("#mines-start").classList.contains("hidden")) {
       minesCount = Number(b.dataset.n);
@@ -752,7 +937,6 @@ function renderRoulette() {
     stops.push(`${color} ${-ANG/2 + i*ANG}deg ${-ANG/2 + (i+1)*ANG}deg`);
   }
   const gradient = `conic-gradient(${stops.join(",")})`;
-
   body.innerHTML = `
     <div class="flex flex-col h-full gap-3">
       <div class="rounded-3xl bg-black/30 py-6">
@@ -763,7 +947,6 @@ function renderRoulette() {
         </div>
       </div>
       <div id="roul-message" class="text-center text-sm text-gray-400">Выберите ставку и крутите</div>
-
       <div class="grid grid-cols-3 gap-2">
         <button class="roul-bet glass rounded-xl py-3 font-bold" data-t="red">🔴 Красное</button>
         <button class="roul-bet glass rounded-xl py-3 font-bold" data-t="black">⚫ Чёрное</button>
@@ -776,12 +959,11 @@ function renderRoulette() {
       <div class="flex items-center gap-2">
         <input id="roul-num" type="number" min="0" max="36" placeholder="число 0–36"
           class="flex-1 bg-white/5 rounded-xl px-3 py-2 text-center outline-none border border-white/10 focus:border-purple-500">
-        <button id="roul-num-btn" class="grad rounded-xl px-4 py-2 font-bold text-sm">Число (36x)</button>
+        <button id="roul-num-btn" class="grad rounded-xl px-4 py-2 font-bold text-sm">Число (×${cfg.payouts.roulette_number})</button>
       </div>
       ${betInputRow("roul-bet", 0.5)}
       <button id="roul-spin" class="grad w-full rounded-2xl py-3.5 font-bold text-lg">Крутить</button>
       <div id="roul-result" class="text-center text-sm"></div>
-
       <div>
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-bold">Ставки игроков</div>
@@ -792,14 +974,12 @@ function renderRoulette() {
         </div>
       </div>
     </div>`;
-
   const betEl = () => body.querySelector("#roul-bet");
   wireBet(body, betEl);
   let selected = null;
   const wheel = body.querySelector("#wheel");
   const center = body.querySelector("#wheel-center");
   let rotation = 0;
-
   body.querySelectorAll(".roul-bet").forEach(b => b.onclick = () => {
     selected = { type: b.dataset.t, value: null };
     body.querySelectorAll(".roul-bet").forEach(x => x.classList.remove("bg-white/10"));
@@ -811,9 +991,8 @@ function renderRoulette() {
     if (n < 0 || n > 36) return toast("Число 0–36");
     selected = { type: "number", value: n };
     body.querySelectorAll(".roul-bet").forEach(x => x.classList.remove("bg-white/10"));
-    body.querySelector("#roul-message").innerHTML = `Выбрано: <b>число ${n}</b> (×36)`;
+    body.querySelector("#roul-message").innerHTML = `Выбрано: <b>число ${n}</b> (×${cfg.payouts.roulette_number})`;
   };
-
   async function loadRoulBets() {
     const wrap = body.querySelector("#roul-bets");
     try {
@@ -828,7 +1007,7 @@ function renderRoulette() {
             </div>
             <div class="min-w-0">
               <div class="font-semibold truncate">${b.name}</div>
-              <div class="text-[10px] text-gray-400">${BT[b.bet_type] || b.bet_type || ""} · ставка ${num(b.amount).toFixed(2)} ₮</div>
+              <div class="text-[10px] text-gray-400">${BT[b.bet_type] || b.bet_type || ""} · ${num(b.amount).toFixed(2)} ₮</div>
             </div>
           </div>
           <div class="text-right shrink-0 ml-2">
@@ -842,7 +1021,6 @@ function renderRoulette() {
   }
   body.querySelector("#roul-refresh").onclick = loadRoulBets;
   loadRoulBets();
-
   body.querySelector("#roul-spin").onclick = async () => {
     if (!selected) return toast("Выберите ставку");
     const bet = Number(betEl().value);
@@ -855,12 +1033,10 @@ function renderRoulette() {
     try {
       const r = await api("/api/games/roulette/bet", { method:"POST",
         body: JSON.stringify({ bet, type: selected.type, value: selected.value }) });
-
       const idx = ROUL_ORDER.indexOf(r.number);
       const sectorCenter = idx * ANG + ANG / 2;
       rotation += 360 * 5 + (360 - sectorCenter - (rotation % 360));
       wheel.style.transform = `rotate(${rotation}deg)`;
-
       setTimeout(() => {
         const colorClass = r.color === "red" ? "text-red-500" :
                            r.color === "black" ? "text-gray-300" : "text-green-400";
@@ -875,10 +1051,7 @@ function renderRoulette() {
         spinBtn.disabled = false;
         loadRoulBets();
       }, 4600);
-    } catch (e) {
-      toast(e.message);
-      spinBtn.disabled = false;
-    }
+    } catch (e) { toast(e.message); spinBtn.disabled = false; }
   };
 }
 
@@ -886,7 +1059,7 @@ function renderRoulette() {
 setInterval(async () => {
   try { const p = await api("/api/profile"); profile = p; renderProfile(); } catch {}
 }, 10000);
-setInterval(loadLive, 15000);
+setInterval(loadLive, 8000);
 
 // ============ BOOT ============
 renderGames();
