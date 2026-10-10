@@ -49,7 +49,6 @@ SUPPORTED_CURRENCIES = ["USDT", "TON", "BTC", "ETH", "TRX"]
 CRASH_BETTING_SEC = 10
 CRASH_COOLDOWN_SEC = 4
 
-# Plinko мультиплаеры (RTP ~96%)
 PLINKO_MULTS = {
     8:  [5.6, 2.1, 1.1, 1.0, 0.5, 1.0, 1.1, 2.1, 5.6],
     12: [10, 3, 1.6, 1.4, 1.1, 1.0, 0.5, 1.0, 1.1, 1.4, 1.6, 3, 10],
@@ -100,7 +99,6 @@ async def ensure_not_banned(profile):
         raise HTTPException(403, f"аккаунт заблокирован: {reason}")
 
 
-# =================== xRocket ===================
 async def xrocket_request(method: str, path: str, body: dict | None = None) -> dict:
     url = f"{XROCKET_API_BASE}{path}"
     headers = {"Authorization": f"Bearer {XROCKET_API_KEY}", "Content-Type": "application/json"}
@@ -137,7 +135,6 @@ async def xrocket_create_payout(user_id, amount, comment, req_id, currency="USDT
     return {"id": payout_id, "raw": data}
 
 
-# =================== math / PF ===================
 def pf_rand(ss, cs, n):
     h = hmac.new(ss.encode(), f"{cs}:{n}".encode(), hashlib.sha256).hexdigest()
     return int(h[:13], 16) / float(0xFFFFFFFFFFFFF)
@@ -179,11 +176,10 @@ def plinko_path(ss, cs, n, rows):
     return idx
 
 def tower_step_positions(ss, cs, n, levels=6):
-    """Для каждого уровня — индекс мины (0,1,2)."""
     positions = []
     for i in range(levels):
         r = pf_rand(ss, cs, n * 100 + i)
-        positions.append(int(r * 3))  # 0..2
+        positions.append(int(r * 3))
     return positions
 
 def tower_mult(level):
@@ -211,7 +207,6 @@ def bj_value(cards):
     return total
 
 
-# =================== auth ===================
 def validate_init_data(init_data, bot_token):
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -232,7 +227,6 @@ async def get_current_user(x_telegram_init_data: str = Header(None, alias="X-Tel
     return u
 
 
-# =================== DB helpers ===================
 async def get_or_create_profile(tg_user):
     tg_id = int(tg_user["id"])
     r = await sb(supabase.table("profiles").select("*").eq("telegram_id", tg_id))
@@ -292,7 +286,6 @@ def referral_info_sync(profile):
     return {"link": ref_link, "share": REFERRAL_SHARE}
 
 
-# =================== payments ===================
 async def create_deposit_invoice(profile, amount, currency="USDT"):
     if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "неподдерживаемая валюта")
     cid = f"dep_{profile['id'][:8]}_{int(time.time())}"
@@ -337,15 +330,13 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
     return payout
 
 
-# =================== CRASH auto-cashout task ===================
 async def crash_auto_cashout_watcher(round_id: str, started_at: float, crash_point_val: float):
-    """Каждые 100мс проверяет активные ставки с авто-выводом."""
     try:
         while True:
             elapsed = time.time() - started_at
-            if elapsed > 120: break  # safety timeout
+            if elapsed > 120: break
             current = crash_mult(elapsed)
-            if current >= crash_point_val: break  # crash, всё сгорит
+            if current >= crash_point_val: break
             try:
                 active = (await sb(supabase.table("crash_bets").select("*")
                                    .eq("round_id", round_id).eq("status", "active")
@@ -356,8 +347,7 @@ async def crash_auto_cashout_watcher(round_id: str, started_at: float, crash_poi
                 auto = float(b["auto_cashout_mult"])
                 if auto <= 0: continue
                 if current >= auto:
-                    amount = float(b["amount"])
-                    mult = auto  # кэш ровно на auto, а не на текущий
+                    amount = float(b["amount"]); mult = auto
                     payout = round(amount * mult, 8); profit = round(payout - amount, 8)
                     try:
                         await sb(supabase.table("crash_bets").update({
@@ -373,13 +363,10 @@ async def crash_auto_cashout_watcher(round_id: str, started_at: float, crash_poi
                                         profit, crash_state["server_seed"] or "", 0)
                     except Exception: log.exception("auto cashout failed")
             await asyncio.sleep(0.15)
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        log.exception("auto cashout watcher error")
+    except asyncio.CancelledError: pass
+    except Exception: log.exception("auto cashout watcher error")
 
 
-# =================== CRASH LOOP ===================
 async def crash_loop():
     global crash_state
     await asyncio.sleep(3)
@@ -395,25 +382,19 @@ async def crash_loop():
                                 "server_seed": ss, "crash_point": cp,
                                 "started_at": None, "betting_ends_at": now + CRASH_BETTING_SEC})
             await asyncio.sleep(CRASH_BETTING_SEC)
-
             started = time.time()
             await sb(supabase.table("crash_rounds").update({
                 "status": "running", "started_at": datetime.now(timezone.utc).isoformat()}).eq("id", round_id))
             crash_state["status"] = "running"
             crash_state["started_at"] = started
-
-            # запускаем watcher для авто-вывода
             auto_task = asyncio.create_task(crash_auto_cashout_watcher(round_id, started, cp))
             crash_state["auto_task"] = auto_task
-
             duration = max(0.4, math.log(cp) / math.log(1.07)) if cp > 1.0 else 0.4
             await asyncio.sleep(duration)
             if not auto_task.done(): auto_task.cancel()
-
             await sb(supabase.table("crash_rounds").update({
                 "status": "crashed", "ended_at": datetime.now(timezone.utc).isoformat()}).eq("id", round_id))
             crash_state["status"] = "crashed"
-
             lost = (await sb(supabase.table("crash_bets").select("*")
                              .eq("round_id", round_id).eq("status", "active"))).data or []
             for b in lost:
@@ -421,16 +402,13 @@ async def crash_loop():
                 await log_round(b["user_id"], "crash", float(b["amount"]),
                                 {"global": True, "crashed_at": cp}, -float(b["amount"]), ss, 0)
                 await credit_referrer_on_loss(b["user_id"], float(b["amount"]))
-
             await asyncio.sleep(CRASH_COOLDOWN_SEC)
-            crash_state["status"] = "idle"
-            crash_state["round_id"] = None
+            crash_state["status"] = "idle"; crash_state["round_id"] = None
         except Exception as e:
             log.exception("crash loop error: %s", e)
             await asyncio.sleep(5)
 
 
-# =================== aiogram ===================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -454,7 +432,6 @@ def fmt_stats(s, balance, first_name):
             f"🎮 Игр: <b>{s['games']}</b>\n📊 Профит: <b>{s['net']:+.2f}</b>")
 
 
-# =================== ADMIN ===================
 def admin_only(message: Message) -> bool:
     return message.from_user and is_admin(message.from_user.id)
 
@@ -463,16 +440,11 @@ async def cmd_admin(message: Message):
     if not admin_only(message): return
     await message.answer(
         f"🏦 <b>Админ-панель</b>\nRTP {100-HOUSE_EDGE*100:.0f}% · HE {HOUSE_EDGE*100:.1f}%\n"
-        f"Мин ставка {MIN_BET} · макс {MAX_BET}\n"
-        f"Мин деп {MIN_DEPOSIT} · мин вывод {MIN_WITHDRAW}\n"
-        f"Лимит вывода/сутки {MAX_WITHDRAW_DAILY}\nКулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
+        f"Мин ставка {MIN_BET} · макс {MAX_BET}\nМин деп {MIN_DEPOSIT} · мин вывод {MIN_WITHDRAW}\n"
+        f"Лимит/сутки {MAX_WITHDRAW_DAILY}\nКулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
         f"Рефералка {REFERRAL_SHARE*100:.0f}%\n━━━━━━━━━━━━━━━\n"
-        f"/astats · /arp · /auser &lt;id&gt;\n"
-        f"/agive &lt;id&gt; &lt;sum&gt; · /atake &lt;id&gt; &lt;sum&gt;\n"
-        f"/aban &lt;id&gt; [reason] · /aunban &lt;id&gt;\n"
-        f"/abroadcast &lt;text&gt;\n"
-        f"/anewpromo &lt;code&gt; &lt;amount&gt; [max]\n"
-        f"/alistpromos · /adelpromo &lt;code&gt;",
+        f"/astats · /arp · /auser &lt;id&gt;\n/agive · /atake\n/aban · /aunban\n"
+        f"/abroadcast · /anewpromo · /alistpromos · /adelpromo",
         parse_mode="HTML")
 
 @dp.message(Command("aban"))
@@ -505,12 +477,10 @@ async def cmd_arp(message: Message):
     await message.answer(
         f"📊 RTP: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
         f"🎲 Кубик ×{DICE_PAYOUT} — {DICE_PAYOUT/6*100:.2f}%\n"
-        f"💥 Crash — {(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"💎 Mines — {(1-HOUSE_EDGE)*100:.2f}%\n"
+        f"💥 Crash — {(1-HOUSE_EDGE)*100:.2f}%\n💎 Mines — {(1-HOUSE_EDGE)*100:.2f}%\n"
         f"🎡 Рулетка RB ×{ROUL_RB_PAYOUT}, дюжина ×{ROUL_DOZEN_PAYOUT}, число ×{ROUL_NUM_PAYOUT}\n"
-        f"🃏 Blackjack — {(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🎰 Plinko — ~{(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🗼 Tower — {(1-HOUSE_EDGE)*100:.2f}%",
+        f"🃏 Blackjack — ~{(1-HOUSE_EDGE)*100:.2f}%\n"
+        f"🎰 Plinko — ~{(1-HOUSE_EDGE)*100:.2f}%\n🗼 Tower — ~{(1-HOUSE_EDGE)*100:.2f}%",
         parse_mode="HTML")
 
 @dp.message(Command("astats"))
@@ -529,8 +499,7 @@ async def cmd_astats(message: Message):
             g = r["game_type"]
             by_game.setdefault(g, {"bets": 0, "count": 0})
             by_game[g]["bets"] += float(r["bet_amount"]); by_game[g]["count"] += 1
-        games_text = "\n".join(f"   • {g}: {v['count']} игр, {v['bets']:.2f}"
-                              for g, v in by_game.items()) or "   нет"
+        games_text = "\n".join(f"   • {g}: {v['count']} игр, {v['bets']:.2f}" for g, v in by_game.items()) or "   нет"
         await message.answer(
             f"👥 Юзеров: <b>{len(users)}</b>\n💰 Балансов: <b>{sum(float(u['balance']) for u in users):.2f}</b>\n"
             f"📥 Депозиты: <b>{dep:.2f}</b>\n📤 Выводы: <b>{wd:.2f}</b>\n"
@@ -550,8 +519,8 @@ async def cmd_auser(message: Message, command: CommandObject):
     ban = "🚫 ЗАБАНЕН" if p.get("is_banned") else "✅ активен"
     await message.answer(
         f"👤 <b>{p.get('first_name') or '—'}</b> @{p.get('username') or '—'}\n"
-        f"🆔 <code>{p['telegram_id']}</code>\n💎 <b>{float(p['balance']):.2f}</b>\n"
-        f"Статус: {ban}\n📥 {s['deposits']:.2f} · 📤 {s['withdrawals']:.2f}\n"
+        f"🆔 <code>{p['telegram_id']}</code>\n💎 <b>{float(p['balance']):.2f}</b>\nСтатус: {ban}\n"
+        f"📥 {s['deposits']:.2f} · 📤 {s['withdrawals']:.2f}\n"
         f"🎯 {s['bets']:.2f} · 🏆 {s['wins']:.2f}\n🎮 {s['games']} · 📊 {s['net']:+.2f}",
         parse_mode="HTML")
 
@@ -664,7 +633,6 @@ async def cmd_adelpromo(message: Message, command: CommandObject):
     except Exception as e: await message.answer(f"❌ {e}")
 
 
-# =================== USER COMMANDS ===================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
@@ -737,7 +705,6 @@ async def try_redeem_promo(message: Message, code: str):
     await message.answer(f"✅ +<b>{amount}</b>", parse_mode="HTML")
 
 
-# =================== MENUS ===================
 def deposit_kb():
     amounts = [1, 5, 10, 25, 50, 100]
     rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dep:{a}") for a in amounts[i:i+3]]
@@ -801,9 +768,6 @@ async def cb_dep_amount(cb: CallbackQuery, state: FSMContext):
 async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     p = await get_or_create_profile(cb.from_user.model_dump())
-    await cb_withdraw_dispatch(cb, p)
-
-async def cb_withdraw_dispatch(cb, p):
     bal = float(p["balance"]); cur = p.get("preferred_currency") or "USDT"
     spent = await daily_withdrawn(p["id"]); left = MAX_WITHDRAW_DAILY - spent
     hint = f"\n\n⚠️ Баланс {bal:.2f}, минимум {MIN_WITHDRAW}." if bal < MIN_WITHDRAW else ""
@@ -831,12 +795,10 @@ async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
     try: await do_withdraw(p, cb.from_user.id, amount, cur)
     except HTTPException as e: return await cb.message.edit_text(f"❌ {e.detail}", reply_markup=back_kb())
     except Exception as e:
-        log.exception("payout failed")
-        return await cb.message.edit_text(f"❌ {e}", reply_markup=back_kb())
+        log.exception("payout failed"); return await cb.message.edit_text(f"❌ {e}", reply_markup=back_kb())
     await cb.message.edit_text(f"✅ Выплата <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=back_kb())
 
 
-# =================== FSM ===================
 @dp.message(AmountInput.deposit)
 async def fsm_deposit_amount(message: Message, state: FSMContext):
     try: amount = float(message.text.replace(",", ".").strip())
@@ -869,7 +831,6 @@ async def fsm_withdraw_amount(message: Message, state: FSMContext):
     await msg.edit_text(f"✅ Выплата <b>{amount} {cur}</b>.", parse_mode="HTML", reply_markup=back_kb())
 
 
-# =================== DICE ===================
 def dice_bet_kb():
     amounts = [0.5, 1, 5, 10, 25, 50]
     rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dice_bet:{a}") for a in amounts[i:i+3]]
@@ -932,7 +893,6 @@ async def cb_dice_num(cb: CallbackQuery):
     await bot.send_message(cb.message.chat.id, text, parse_mode="HTML", reply_markup=again_kb)
 
 
-# =================== REF ===================
 @dp.callback_query(F.data == "menu:ref")
 async def cb_ref_menu(cb: CallbackQuery):
     p = await get_or_create_profile(cb.from_user.model_dump())
@@ -949,7 +909,6 @@ async def cb_ref_menu(cb: CallbackQuery):
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
-# =================== FastAPI ===================
 @asynccontextmanager
 async def lifespan(app):
     global BOT_USERNAME
@@ -980,11 +939,9 @@ async def config():
         "withdraw_cooldown_min": WITHDRAW_COOLDOWN_MIN, "max_withdraw_daily": MAX_WITHDRAW_DAILY,
         "referral_share": REFERRAL_SHARE, "currencies": SUPPORTED_CURRENCIES,
         "rtp": round(1 - HOUSE_EDGE, 4),
-        "payouts": {
-            "dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
-            "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
-            "plinko": PLINKO_MULTS,
-        },
+        "payouts": {"dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
+                    "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
+                    "plinko": PLINKO_MULTS},
     }
 
 @app.post("/api/auth")
@@ -1183,7 +1140,6 @@ async def xrocket_webhook(request: Request):
     return {"ok": True}
 
 
-# =================== CRASH API ===================
 def _crash_state_sync(p):
     status = crash_state["status"]; mult = 1.0
     if status == "running" and crash_state["started_at"]:
@@ -1224,8 +1180,7 @@ async def crash_state_endpoint(user: dict = Depends(get_current_user)):
 @app.post("/api/crash/bet")
 async def crash_bet(body: dict, user: dict = Depends(get_current_user)):
     if crash_state["status"] != "betting": raise HTTPException(400, "ставки закрыты")
-    bet = float(body.get("bet", 0))
-    auto = body.get("auto_cashout_mult")
+    bet = float(body.get("bet", 0)); auto = body.get("auto_cashout_mult")
     auto = float(auto) if auto else None
     if auto is not None and (auto < 1.01 or auto > 100): raise HTTPException(400, "auto 1.01..100")
     if not (MIN_BET <= bet <= MAX_BET): raise HTTPException(400, f"bet {MIN_BET}..{MAX_BET}")
@@ -1289,7 +1244,6 @@ async def roulette_bets():
     except Exception: return []
 
 
-# =================== DICE WEBAPP ===================
 @app.post("/api/games/dice/bet")
 async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0)); chosen = int(body.get("chosen", 0))
@@ -1316,7 +1270,6 @@ async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "result": result, "win": win, "profit": profit, "payout": payout}
 
 
-# =================== PLINKO ===================
 @app.post("/api/games/plinko/drop")
 async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0)); rows = int(body.get("rows", 8))
@@ -1343,7 +1296,23 @@ async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "slot": idx, "mult": mult, "payout": payout, "profit": profit, "rows": rows}
 
 
-# =================== BLACKJACK ===================
+@app.get("/api/games/blackjack/state")
+async def bj_state(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "blackjack":
+        return {"active": False}
+    st = ar["state"]
+    return {
+        "active": True,
+        "player": st["player"],
+        "dealer": [st["dealer"][0], "??"],
+        "player_value": bj_value(st["player"]),
+        "dealer_value": bj_value([st["dealer"][0]]),
+        "finished": False,
+        "bet": float(ar["bet_amount"]),
+    }
+
 @app.post("/api/games/blackjack/start")
 async def bj_start(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0))
@@ -1351,16 +1320,21 @@ async def bj_start(body: dict, user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    if await get_active_round(p["id"]): raise HTTPException(400, "активная игра уже есть")
+    ar = await get_active_round(p["id"])
+    if ar:
+        if ar["game_type"] == "blackjack":
+            st = ar["state"]
+            return {"ok": True, "resumed": True, "player": st["player"],
+                    "dealer": [st["dealer"][0], "??"],
+                    "player_value": bj_value(st["player"]),
+                    "dealer_value": bj_value([st["dealer"][0]]),
+                    "finished": False}
+        raise HTTPException(400, f"активная игра: {ar['game_type']}. Сначала доиграй её.")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     deck = bj_deck(ss, p["client_seed"], nonce)
-    player = [deck[0], deck[2]]
-    dealer = [deck[1], deck[3]]
-    rest = deck[4:]
+    player = [deck[0], deck[2]]; dealer = [deck[1], deck[3]]; rest = deck[4:]
     player_v = bj_value(player)
-    dealer_v = bj_value([dealer[0]])
-    state = {"player": player, "dealer": dealer, "rest": rest, "bet": bet,
-             "status": "player_turn"}
+    state = {"player": player, "dealer": dealer, "rest": rest, "bet": bet, "status": "player_turn"}
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
     await sb(supabase.table("profiles").update({"nonce": nonce}).eq("id", p["id"]))
     await sb(supabase.table("active_rounds").insert({
@@ -1369,14 +1343,10 @@ async def bj_start(body: dict, user: dict = Depends(get_current_user)):
     await sb(supabase.table("transactions").insert({
         "user_id": p["id"], "type": "bet", "amount": bet, "currency": "USDT",
         "status": "completed", "meta": {"game": "blackjack"}}))
-
-    # сразу blackjack?
     if player_v == 21:
-        # выплата 2.5x, но дилер может тоже 21 — push
         dealer_full = bj_value(dealer)
         if dealer_full == 21:
-            payout = bet  # push
-            profit = 0
+            payout = bet; profit = 0
             await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
         else:
             payout = round(bet * 2.5, 8); profit = round(payout - bet, 8)
@@ -1385,16 +1355,14 @@ async def bj_start(body: dict, user: dict = Depends(get_current_user)):
             "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
             "status": "completed", "meta": {"game": "blackjack", "bj": True}}))
         await log_round(p["id"], "blackjack", bet,
-                        {"player": player, "dealer": dealer, "bj": True},
-                        profit, ss, nonce)
+                        {"player": player, "dealer": dealer, "bj": True}, profit, ss, nonce)
         await clear_active_round(p["id"])
         return {"ok": True, "player": player, "dealer": dealer,
                 "player_value": player_v, "dealer_value": dealer_full,
                 "finished": True, "win": profit > 0, "push": profit == 0,
                 "profit": profit, "payout": payout}
-
     return {"ok": True, "player": player, "dealer": [dealer[0], "??"],
-            "player_value": player_v, "dealer_value": dealer_v,
+            "player_value": player_v, "dealer_value": bj_value([dealer[0]]),
             "finished": False}
 
 @app.post("/api/games/blackjack/hit")
@@ -1406,12 +1374,9 @@ async def bj_hit(user: dict = Depends(get_current_user)):
     if st["status"] != "player_turn": raise HTTPException(400, "не твой ход")
     rest = st["rest"]
     if not rest: raise HTTPException(400, "колода кончилась")
-    card = rest.pop(0)
-    st["player"].append(card)
-    st["rest"] = rest
+    card = rest.pop(0); st["player"].append(card); st["rest"] = rest
     pv = bj_value(st["player"])
     if pv > 21:
-        # bust — потеря
         await log_round(p["id"], "blackjack", float(st["bet"]),
                         {"player": st["player"], "dealer": st["dealer"], "bust": True},
                         -float(st["bet"]), ar["server_seed"], ar["nonce"])
@@ -1431,17 +1396,14 @@ async def bj_stand(user: dict = Depends(get_current_user)):
     if not ar or ar["game_type"] != "blackjack": raise HTTPException(400, "нет активной игры")
     st = ar["state"]
     if st["status"] != "player_turn": raise HTTPException(400, "уже завершено")
-    # дилер берёт до 17
     rest = st["rest"]
     while bj_value(st["dealer"]) < 17 and rest:
         st["dealer"].append(rest.pop(0))
     st["rest"] = rest
     pv = bj_value(st["player"]); dv = bj_value(st["dealer"])
-    bet = float(st["bet"])
-    profit = -bet; payout = 0; push = False; win = False
+    bet = float(st["bet"]); profit = -bet; payout = 0; push = False; win = False
     if dv > 21 or pv > dv:
-        win = True
-        payout = round(bet * 2, 8); profit = round(payout - bet, 8)
+        win = True; payout = round(bet * 2, 8); profit = round(payout - bet, 8)
         await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
         await sb(supabase.table("transactions").insert({
             "user_id": p["id"], "type": "win", "amount": profit, "currency": "USDT",
@@ -1461,7 +1423,23 @@ async def bj_stand(user: dict = Depends(get_current_user)):
             "profit": profit, "payout": payout}
 
 
-# =================== TOWER ===================
+@app.get("/api/games/tower/state")
+async def tower_state(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "tower":
+        return {"active": False}
+    st = ar["state"]
+    return {
+        "active": True,
+        "level": st["level"],
+        "mult": tower_mult(st["level"]),
+        "next_mult": tower_mult(st["level"] + 1),
+        "bet": float(ar["bet_amount"]),
+        "revealed": st.get("revealed", []),
+        "mine_positions": st["mine_positions"],
+    }
+
 @app.post("/api/games/tower/start")
 async def tower_start(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0))
@@ -1469,7 +1447,14 @@ async def tower_start(body: dict, user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "bet")
     if float(p["balance"]) < bet: raise HTTPException(400, "insufficient balance")
-    if await get_active_round(p["id"]): raise HTTPException(400, "активная игра уже есть")
+    ar = await get_active_round(p["id"])
+    if ar:
+        if ar["game_type"] == "tower":
+            st = ar["state"]
+            return {"ok": True, "resumed": True, "level": st["level"],
+                    "mult": tower_mult(st["level"]),
+                    "next_mult": tower_mult(st["level"] + 1)}
+        raise HTTPException(400, f"активная игра: {ar['game_type']}. Сначала доиграй её.")
     ss = os.urandom(16).hex(); nonce = p["nonce"] + 1
     positions = tower_step_positions(ss, p["client_seed"], nonce, levels=6)
     state = {"level": 0, "mine_positions": positions, "bet": bet, "revealed": []}
@@ -1496,7 +1481,6 @@ async def tower_step(body: dict, user: dict = Depends(get_current_user)):
     mine = st["mine_positions"][level]
     bet = float(st["bet"])
     if door == mine:
-        # мина — потеря
         await log_round(p["id"], "tower", bet,
                         {"level": level, "door": door, "mine": mine, "lost": True},
                         -bet, ar["server_seed"], ar["nonce"])
@@ -1533,7 +1517,6 @@ async def tower_cashout(user: dict = Depends(get_current_user)):
             "mine_positions": st["mine_positions"]}
 
 
-# =================== MINES ===================
 @app.post("/api/games/mines/start")
 async def mines_start(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0)); mines = int(body.get("mines", 3))
