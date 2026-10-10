@@ -1237,6 +1237,31 @@ async def cmd_arak(message: Message, command: CommandObject):
         "currency": "USDT", "status": "completed", "meta": {"source": "rakeback"}}))
     await message.answer(f"✅ Рейкбек +{amount:.2f} → {p['telegram_id']}")
 
+
+@dp.message(Command("atestsub"))
+async def cmd_atestsub(message: Message, command: CommandObject):
+    if not admin_only(message): return
+    if not CHANNEL_ID:
+        return await message.answer("❌ CHANNEL_ID не задан")
+    target_id = message.from_user.id
+    if command.args and command.args.strip().lstrip("-").isdigit():
+        target_id = int(command.args.strip())
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=target_id)
+        await message.answer(
+            f"<b>🔍 Проверка</b>\n"
+            f"CHANNEL_ID: <code>{CHANNEL_ID}</code>\n"
+            f"User: <code>{target_id}</code>\n"
+            f"Status: <b>{member.status}</b>\n"
+            f"is_member: <b>{getattr(member, 'is_member', '?')}</b>\n\n"
+            f"Result: <b>{'✅ PASS' if member.status in ('member','administrator','creator') else '❌ FAIL'}</b>",
+            parse_mode="HTML")
+    except Exception as e:
+        await message.answer(
+            f"❌ <b>Ошибка:</b>\n<code>{e}</code>\n\n"
+            f"Скорее всего бот НЕ админ канала.",
+            parse_mode="HTML")
+
 @dp.message(Command("arisk"))
 async def cmd_arisk(message: Message, command: CommandObject):
     if not admin_only(message): return
