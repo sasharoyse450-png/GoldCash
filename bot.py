@@ -43,6 +43,8 @@ WITHDRAW_COOLDOWN_MIN = int(os.environ.get("WITHDRAW_COOLDOWN_MIN", "15"))
 MAX_WITHDRAW_DAILY = float(os.environ.get("MAX_WITHDRAW_DAILY", "500"))
 REFERRAL_SHARE = float(os.environ.get("REFERRAL_SHARE", "0.05"))
 
+WAGER_RESET_THRESHOLD = float(os.environ.get("WAGER_RESET_THRESHOLD", "0.1"))
+
 ADMIN_IDS = set(int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip().isdigit())
 
 DICE_PAYOUT = round(6 * (1 - HOUSE_EDGE), 4)
@@ -91,8 +93,8 @@ DICE_PREDICTIONS = {
         "num":    {"label": "Точное число","mult": 4.8},
     },
     "dart": {
-        "red":    {"label": "Красное 1-3", "mult": 1.92},
-        "white":  {"label": "Белое 4-5",   "mult": 2.88},
+        "red":    {"label": "Красное 1-2", "mult": 2.88},
+        "white":  {"label": "Белое 3-5",   "mult": 1.92},
         "center": {"label": "Центр 6",     "mult": 5.76},
         "num":    {"label": "Точное число","mult": 5.76},
     },
@@ -116,14 +118,27 @@ def eval_prediction(game, result, ptype, pvalue=None):
         if ptype == "high": return result >= 3
     if game == "dart":
         if ptype == "num":    return result == int(pvalue)
-        if ptype == "red":    return 1 <= result <= 3
-        if ptype == "white":  return 4 <= result <= 5
+        if ptype == "red":    return 1 <= result <= 2
+        if ptype == "white":  return 3 <= result <= 5
         if ptype == "center": return result == 6
     if game == "football":
         if ptype == "num":  return result == int(pvalue)
         if ptype == "goal": return result >= 4
         if ptype == "miss": return result <= 3
     return False
+
+def zone_label(game, val):
+    if game == "dart":
+        if val in (1, 2):    return "🔴 красное"
+        if val in (3, 4, 5): return "⚪ белое"
+        if val == 6:         return "🎯 центр"
+    if game == "dice":
+        return "чёт" if val % 2 == 0 else "нечёт"
+    if game == "basket":
+        return "промах" if val <= 2 else "забил"
+    if game == "football":
+        return "мимо" if val <= 3 else "гол"
+    return ""
 
 PLINKO_MULTS = {
     8:  [5.6, 2.1, 1.1, 1.0, 0.5, 1.0, 1.1, 2.1, 5.6],
@@ -219,35 +234,70 @@ class SubscriptionMiddleware(BaseMiddleware):
             return
         return await handler(event, data)
 
-# ================== XROCKET ==================
+# ================== XROCKET (ИСПРАВЛЕНО) ==================
 async def xrocket_request(method: str, path: str, body: dict | None = None) -> dict:
+    """Универсальный запрос к xRocket Pay API."""
     url = f"{XROCKET_API_BASE}{path}"
-    headers = {"Authorization": f"Bearer {XROCKET_API_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {XROCKET_API_KEY}",
+        "Content-Type": "application/json",
+    }
     async with httpx.AsyncClient(timeout=30) as http:
         r = await http.request(method, url, json=body or {}, headers=headers)
-        try: data = r.json()
-        except Exception: data = {"raw": r.text}
+        try:
+            data = r.json()
+        except Exception:
+            data = {"raw": r.text}
+
+        log.info("xRocket %s %s -> %s\n  req=%s\n  resp=%s",
+                 method, path, r.status_code, body, data)
+
         if r.status_code not in (200, 201):
-            log.error("xRocket %s %s -> %s %s", method, path, r.status_code, data)
-            msg = data.get("message") or data.get("detail") or data.get("error") or f"HTTP {r.status_code}"
-            if isinstance(msg, dict): msg = json.dumps(msg, ensure_ascii=False)
-            raise Exception(f"{msg}")
+            msg = (data.get("detail") or data.get("message")
+                   or data.get("error") or f"HTTP {r.status_code}")
+            if isinstance(msg, dict):
+                msg = json.dumps(msg, ensure_ascii=False)
+            raise Exception(msg)
+
         return data
 
-async def xrocket_create_invoice(amount, description, req_id, currency="USDT"):
-    payload = {"amount": float(amount), "asset": currency, "description": description, "payload": req_id}
-    data = await xrocket_request("POST", "/api/v1/invoices", payload)
-    link = data.get("link") or data.get("url") or data.get("invoiceUrl")
-    inv_id = data.get("id") or data.get("invoiceId")
-    if not link: raise Exception(f"xRocket не вернул ссылку: {data}")
-    return {"id": inv_id, "link": link, "raw": data}
 
-async def xrocket_create_payout(user_id, amount, comment, req_id, currency="USDT"):
-    payload = {"target": str(user_id), "asset": currency, "amount": float(amount),
-               "description": comment, "payload": req_id}
+async def xrocket_create_invoice(amount: float, description: str,
+                                  client_id: str, currency: str = "USDT") -> dict:
+    """Создаёт инвойс на оплату. Возвращает {'id': ..., 'link': ..., 'raw': ...}"""
+    payload = {
+        "currency": currency.upper(),
+        "amount": float(amount),
+        "description": description,
+        "clientInvoiceId": client_id,
+    }
+    data = await xrocket_request("POST", "/api/v1/invoices", payload)
+
+    links = data.get("links") or {}
+    link = (links.get("telegramBotLink")
+            or links.get("telegramMiniAppLink")
+            or links.get("webLink"))
+
+    if not link:
+        raise Exception(f"xRocket не вернул ссылку: {data}")
+
+    return {"id": data.get("id"), "link": link, "raw": data}
+
+
+async def xrocket_create_payout(user_id: int, amount: float, comment: str,
+                                 client_id: str, currency: str = "USDT") -> dict:
+    """Отправляет выплату пользователю Telegram."""
+    payload = {
+        "clientPayoutId": client_id,
+        "target": str(user_id),
+        "targetType": "telegram_user_id",
+        "asset": currency.upper(),
+        "amount": str(amount),
+        "description": comment or "Withdraw",
+    }
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
-    payout_id = data.get("payoutId") or data.get("id")
-    return {"id": payout_id, "raw": data}
+    return {"id": data.get("payoutId"), "raw": data}
+
 
 # ================== MATH / PF ==================
 def pf_rand(ss, cs, n):
@@ -323,19 +373,46 @@ def validate_init_data(init_data, bot_token):
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
         rh = parsed.pop("hash", None)
-        if not rh: return None
+        if not rh:
+            log.error("validate: no hash in initData")
+            return None
+
+        auth_date_str = parsed.get("auth_date")
+        if auth_date_str:
+            try:
+                auth_date = int(auth_date_str)
+                age = time.time() - auth_date
+                if age > 7200:
+                    log.warning("validate: initData expired, age=%ss", int(age))
+                    return None
+            except (ValueError, TypeError):
+                log.error("validate: bad auth_date=%s", auth_date_str)
+
         dcs = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
         sk = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-        if not hmac.compare_digest(hmac.new(sk, dcs.encode(), hashlib.sha256).hexdigest(), rh): return None
+        calc = hmac.new(sk, dcs.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(calc, rh):
+            log.error("validate: HASH MISMATCH\n  data_check_string=%r\n  calc=%s\n  recv=%s",
+                      dcs, calc, rh)
+            return None
+
         u = json.loads(parsed.get("user", "{}"))
-        return u if u.get("id") else None
+        if not u.get("id"):
+            log.error("validate: no user.id")
+            return None
+        return u
     except Exception:
-        log.exception("validate_init_data failed"); return None
+        log.exception("validate_init_data failed")
+        return None
 
 async def get_current_user(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
-    if not x_telegram_init_data: raise HTTPException(401, "missing init data")
+    if not x_telegram_init_data:
+        log.warning("API: missing X-Telegram-Init-Data header")
+        raise HTTPException(401, "missing init data")
     u = validate_init_data(x_telegram_init_data, BOT_TOKEN)
-    if not u: raise HTTPException(401, "invalid init data")
+    if not u:
+        raise HTTPException(401, "invalid init data")
     if not await is_subscribed(int(u["id"])):
         raise HTTPException(403, "subscription_required")
     return u
@@ -419,6 +496,26 @@ async def apply_wager_progress(uid, bet: float):
     except Exception:
         log.exception("apply_wager_progress failed")
 
+async def check_and_reset_wager_if_broke(uid):
+    try:
+        r = await sb(supabase.table("profiles").select(
+            "balance, bonus_active").eq("id", uid))
+        if not r.data: return False
+        p = r.data[0]
+        if not p.get("bonus_active"): return False
+        bal = float(p.get("balance") or 0)
+        if bal >= WAGER_RESET_THRESHOLD:
+            return False
+        await sb(supabase.table("profiles").update({
+            "bonus_active": False, "wager_required": 0, "wager_progress": 0,
+            "bonus_amount": 0, "bonus_code": None, "bonus_max_bet": None,
+            "bonus_allowed_games": None}).eq("id", uid))
+        log.info("wager auto-reset (broke) uid=%s bal=%s", uid, bal)
+        return True
+    except Exception:
+        log.exception("check_and_reset_wager_if_broke failed")
+        return False
+
 async def check_wager_lock(profile):
     if not profile.get("bonus_active"): return
     req = float(profile.get("wager_required") or 0)
@@ -456,13 +553,22 @@ def _bonus_info(p: dict) -> dict:
 
 # ================== PAYMENTS ==================
 async def create_deposit_invoice(profile, amount, currency="USDT"):
-    if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "неподдерживаемая валюта")
+    if currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(400, "неподдерживаемая валюта")
+
     cid = f"dep_{profile['id'][:8]}_{int(time.time())}"
-    inv = await xrocket_create_invoice(amount, "GoldCash deposit", cid, currency)
+    inv = await xrocket_create_invoice(
+        amount=amount,
+        description="GoldCash deposit",
+        client_id=cid,
+        currency=currency,
+    )
+
     await sb(supabase.table("transactions").insert({
         "user_id": profile["id"], "type": "deposit", "amount": amount,
         "currency": currency, "external_id": cid, "status": "pending",
         "meta": {"invoice_id": inv.get("id")}}))
+
     return {"link": inv["link"], "invoice_id": inv.get("id"), "cid": cid}
 
 async def daily_withdrawn(uid):
@@ -473,7 +579,10 @@ async def daily_withdrawn(uid):
     return sum(float(x["amount"]) for x in r.data or [])
 
 async def do_withdraw(profile, tg_id, amount, currency="USDT"):
-    if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "неподдерживаемая валюта")
+    if currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(400, "неподдерживаемая валюта")
+
+    # кулдаун после депозита
     last = await sb(supabase.table("transactions").select("created_at")
                     .eq("user_id", profile["id"]).eq("type", "deposit").eq("status", "completed")
                     .order("created_at", desc=True).limit(1))
@@ -486,12 +595,24 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
                 raise HTTPException(400, f"после депозита подожди {m}м {s}с")
         except HTTPException: raise
         except Exception: log.exception("cooldown check failed")
+
+    # дневной лимит
     spent = await daily_withdrawn(profile["id"])
     if spent + amount > MAX_WITHDRAW_DAILY:
         left = MAX_WITHDRAW_DAILY - spent
         raise HTTPException(400, f"дневной лимит вывода. Осталось {max(0, left):.2f}")
+
+    # выплата
     cid = f"wd_{profile['id'][:8]}_{int(time.time())}"
-    payout = await xrocket_create_payout(tg_id, amount, "GoldCash withdraw", cid, currency)
+    payout = await xrocket_create_payout(
+        user_id=int(tg_id),
+        amount=amount,
+        comment="GoldCash withdraw",
+        client_id=cid,
+        currency=currency,
+    )
+
+    # списываем баланс
     await sb_rpc("change_balance", {"p_user_id": profile["id"], "p_delta": -amount})
     await sb(supabase.table("transactions").insert({
         "user_id": profile["id"], "type": "withdraw", "amount": amount,
@@ -570,6 +691,7 @@ async def crash_loop():
                 await log_round(b["user_id"], "crash", float(b["amount"]),
                                 {"global": True, "crashed_at": cp}, -float(b["amount"]), ss, 0)
                 await credit_referrer_on_loss(b["user_id"], float(b["amount"]))
+                asyncio.create_task(check_and_reset_wager_if_broke(b["user_id"]))
             await asyncio.sleep(CRASH_COOLDOWN_SEC)
             crash_state["status"] = "idle"; crash_state["round_id"] = None
         except Exception as e:
@@ -638,9 +760,9 @@ def pred_type_kb(game, bet):
             back_row])
     if game == "dart":
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔴 Красное 1-3", callback_data=f"pgr:{game}:{bet}:red")],
-            [InlineKeyboardButton(text="⚪ Белое 4-5", callback_data=f"pgr:{game}:{bet}:white")],
-            [InlineKeyboardButton(text="🎯 Центр 6", callback_data=f"pgr:{game}:{bet}:center")],
+            [InlineKeyboardButton(text="🔴 Красное 1-2", callback_data=f"pgr:{game}:{bet}:red")],
+            [InlineKeyboardButton(text="⚪ Белое 3-5",   callback_data=f"pgr:{game}:{bet}:white")],
+            [InlineKeyboardButton(text="🎯 Центр 6",     callback_data=f"pgr:{game}:{bet}:center")],
             [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
             back_row])
     if game == "football":
@@ -682,8 +804,7 @@ async def cmd_ahelp(message: Message):
         "<b>🛠 АДМИН-КОМАНДЫ</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎮 Управление играми</b>\n"
-        "/astatus — какие игры вкл/выкл\n"
-        "/aon GAME · /aoff GAME · /aonall · /aoffall\n"
+        "/astatus · /aon GAME · /aoff GAME · /aonall · /aoffall\n"
         "Игры: crash, mines, roulette, dice, plinko, blackjack, tower, basket, dart, football\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎮 Активные игры</b>\n"
@@ -705,8 +826,7 @@ async def cmd_ahelp(message: Message):
         "<b>🎟 Промо</b>\n"
         "/anewpromo CODE SUM [WAGER] [USES] [MAX_BET] [GAMES]\n"
         "/alistpromos · /adelpromo CODE · /adelallpromos · /apromoinfo CODE\n"
-        "/awager ID · /aresetwager ID\n"
-        "/apromogames CODE all|none|dice,mines\n"
+        "/awager ID · /aresetwager ID · /apromogames CODE all|none|dice,mines\n"
         "/asetbonusgames ID all|none|dice,mines\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📢 Сообщения</b>\n"
@@ -732,6 +852,7 @@ async def cmd_admin(message: Message):
         f"Лимит/сутки {MAX_WITHDRAW_DAILY}\nКулдаун {WITHDRAW_COOLDOWN_MIN} мин\n"
         f"Рефералка {REFERRAL_SHARE*100:.0f}%\n"
         f"Daily bonus: {DAILY_BONUS} ₮ / {BONUS_COOLDOWN_H}ч\n"
+        f"Сброс вейджера если баланс < {WAGER_RESET_THRESHOLD} ₮\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
         f"Игры вкл: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}\n"
         f"Канал: {CHANNEL_ID or '— не задан —'}\n"
@@ -1187,13 +1308,12 @@ async def cmd_arp(message: Message):
     if not admin_only(message): return
     await message.answer(
         f"📊 RTP: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
-        f"🎲 Кубик (число) ×5.76 — 96%\n🎲 Кубик (чёт/нечет, 1-3/4-6) ×1.92 — 96%\n"
-        f"🏀 Баскет — число ×4.8 · ставка на 3-5/1-2 ×1.6\n"
-        f"🎯 Дартс — число/центр ×5.76 · красное ×1.92 · белое ×2.88\n"
-        f"⚽ Футбол — гол ×2.4 · мимо ×1.6 · число ×4.8\n"
-        f"💥 Crash — {(1-HOUSE_EDGE)*100:.2f}%\n💎 Mines — {(1-HOUSE_EDGE)*100:.2f}%\n"
-        f"🎡 Рулетка RB ×{ROUL_RB_PAYOUT}\n"
-        f"🃏 Blackjack / 🎰 Plinko / 🗼 Tower — ~{(1-HOUSE_EDGE)*100:.2f}%",
+        f"🎲 Кубик (число) ×5.76 · (чёт/нечет, 1-3/4-6) ×1.92\n"
+        f"🏀 Баскет — число ×4.8 · 3-5/1-2 ×1.6\n"
+        f"🎯 Дартс — красное 1-2 ×2.88 · белое 3-5 ×1.92 · центр 6 ×5.76\n"
+        f"⚽ Футбол — гол 4-5 ×2.4 · мимо 1-3 ×1.6 · число ×4.8\n"
+        f"💥 Crash · 💎 Mines · 🎡 Рулетка · 🃏 BJ · 🎰 Plinko · 🗼 Tower\n"
+        f"Всё в диапазоне ~{(1-HOUSE_EDGE)*100:.2f}%",
         parse_mode="HTML")
 
 @dp.message(Command("atx"))
@@ -1256,11 +1376,7 @@ async def cmd_anewpromo(message: Message, command: CommandObject):
         return await message.answer(
             "📖 <b>Формат</b>:\n"
             "<code>/anewpromo CODE AMOUNT [WAGER] [USES] [MAX_BET] [GAMES]</code>\n\n"
-            "<b>GAMES:</b> all | none | dice,mines,roulette,basket,dart,football,…\n\n"
-            "<b>Примеры:</b>\n"
-            "<code>/anewpromo SUMMER 5 40 100 1 dice,mines</code>\n"
-            "<code>/anewpromo FREE 1</code>\n"
-            "<code>/anewpromo ALLGAME 3 20 50 2 all</code>",
+            "<b>GAMES:</b> all | none | dice,mines,roulette,basket,dart,football,…",
             parse_mode="HTML")
     code = parts[0].upper().strip()
     try: amount = float(parts[1].replace(",", "."))
@@ -1494,6 +1610,7 @@ async def cmd_asettings(message: Message):
         f"MAX_WITHDRAW_DAILY: {MAX_WITHDRAW_DAILY}\nWITHDRAW_COOLDOWN_MIN: {WITHDRAW_COOLDOWN_MIN}\n"
         f"HOUSE_EDGE: {HOUSE_EDGE}\nRTP: {(1-HOUSE_EDGE)*100:.1f}%\nREFERRAL_SHARE: {REFERRAL_SHARE}\n"
         f"DAILY_BONUS: {DAILY_BONUS}\nBONUS_COOLDOWN_H: {BONUS_COOLDOWN_H}\n"
+        f"WAGER_RESET_THRESHOLD: {WAGER_RESET_THRESHOLD}\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\nКанал: {CHANNEL_ID or '— не задан —'}",
         parse_mode="HTML")
 
@@ -1695,11 +1812,10 @@ async def cmd_help(message: Message):
         "📖 <b>GoldCash — справка</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎲 Предсказания (в чате)</b>\n"
-        "• 🎲 Кубик — число 1–6, чёт/нечет, 1-3 / 4-6\n"
-        "• 🏀 Баскетбол — число 1–5, забил/промазал\n"
-        "• 🎯 Дартс — число 1–6, красное/белое/центр\n"
-        "• ⚽ Футбол — число 1–5, гол/мимо\n"
-        "Кнопка «🎲 Предсказания» в меню.\n"
+        "• 🎲 Кубик — 1-6: чёт/нечет, 1-3 / 4-6, точное число\n"
+        "• 🏀 Баскетбол — 1-5: забил/промазал, точное\n"
+        "• 🎯 Дартс — 1-6: красное 1-2, белое 3-5, центр 6\n"
+        "• ⚽ Футбол — 1-5: гол/мимо, точное\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🌐 Mini App</b>\nMines, Roulette, Plinko, Blackjack, Tower, Crash\n"
         "━━━━━━━━━━━━━━━━━━━\n"
@@ -1710,7 +1826,7 @@ async def cmd_help(message: Message):
         "━━━━━━━━━━━━━━━━━━━\n"
         f"<b>👥 Рефералка</b> — {REFERRAL_SHARE*100:.0f}% от проигрыша друзей\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>Команды</b>\n/balance · /stats · /currency · /promo КОД\n\n"
+        "<b>Команды</b>\n/balance · /stats · /currency · /promo КОД · /bonus\n\n"
         "<i>RTP 96% · Provably Fair</i>",
         parse_mode="HTML", reply_markup=back_kb())
 
@@ -1917,7 +2033,7 @@ async def cb_pg_run(cb: CallbackQuery, state: FSMContext):
 
     await cb.message.edit_text(
         f"{g['emoji']} <b>{g['name']}</b> · ставка <b>{bet} ₮</b>\n"
-        f"Твоё предсказание: <b>{label}</b>\n\n🎲 Бросаем…",
+        f"Твоё предсказание: <b>{label}</b>\n\n{g['emoji']} Бросаем…",
         parse_mode="HTML")
 
     try:
@@ -1950,20 +2066,36 @@ async def cb_pg_run(cb: CallbackQuery, state: FSMContext):
     p2 = await get_or_create_profile(cb.from_user.model_dump())
     balance = float(p2["balance"])
 
+    wager_reset = False
+    if not win and balance < WAGER_RESET_THRESHOLD:
+        wager_reset = await check_and_reset_wager_if_broke(p2["id"])
+
+    z = zone_label(game, result)
+    z_txt = f" ({z})" if z else ""
+
     if win:
-        text = (f"{g['emoji']} <b>Выпало {result}</b> · твоё: {label}\n"
+        text = (f"{g['emoji']} <b>Выпало {result}{z_txt}</b>\n"
+                f"Твоё: {label}\n"
                 f"✅ <b>+{profit:.2f}</b> ₮ (×{pred_meta['mult']})\n\n"
                 f"💎 Баланс: <b>{balance:.2f}</b>")
     else:
-        text = (f"{g['emoji']} <b>Выпало {result}</b> · твоё: {label}\n"
+        text = (f"{g['emoji']} <b>Выпало {result}{z_txt}</b>\n"
+                f"Твоё: {label}\n"
                 f"❌ <b>−{bet:.2f}</b> ₮\n\n"
                 f"💎 Баланс: <b>{balance:.2f}</b>")
+
+    if wager_reset:
+        text += "\n\n♻️ <i>Бонус сброшен — не хватило баланса на отыгрыш</i>"
 
     again_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Ещё раз", callback_data=f"pgb:{game}:{bet}")],
         [InlineKeyboardButton(text="🎲 Другая игра", callback_data="pg:home"),
          InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
-    await bot.send_message(cb.message.chat.id, text, parse_mode="HTML", reply_markup=again_kb)
+
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=again_kb)
+    except Exception:
+        await bot.send_message(cb.message.chat.id, text, parse_mode="HTML", reply_markup=again_kb)
 
 # ================== MAIN MENU CALLBACKS ==================
 @dp.callback_query(F.data == "menu:main")
@@ -2049,6 +2181,8 @@ async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
     amount = float(val)
     if amount < MIN_WITHDRAW: return await cb.answer(f"Минимум {MIN_WITHDRAW}", show_alert=True)
     if float(p["balance"]) < amount: return await cb.answer("Недостаточно", show_alert=True)
+    await check_and_reset_wager_if_broke(p["id"])
+    p = await get_or_create_profile(cb.from_user.model_dump())
     try:
         await check_wager_lock(p)
     except HTTPException as e:
@@ -2085,6 +2219,8 @@ async def fsm_withdraw_amount(message: Message, state: FSMContext):
     if amount < MIN_WITHDRAW: return await message.answer(f"❌ Минимум {MIN_WITHDRAW}")
     if float(p["balance"]) < amount:
         return await message.answer(f"❌ Баланс: <b>{float(p['balance']):.2f}</b>", parse_mode="HTML")
+    await check_and_reset_wager_if_broke(p["id"])
+    p = await get_or_create_profile(message.from_user.model_dump())
     try:
         await check_wager_lock(p)
     except HTTPException as e:
@@ -2139,8 +2275,8 @@ dp.callback_query.middleware(SubscriptionMiddleware())
 async def lifespan(app):
     global BOT_USERNAME
     me = await bot.get_me(); BOT_USERNAME = me.username
-    log.info("start · house_edge=%.3f · admins=%s · bot=@%s · channel=%s · daily_bonus=%s",
-             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—", DAILY_BONUS)
+    log.info("start · house_edge=%.3f · admins=%s · bot=@%s · channel=%s · daily_bonus=%s · wager_reset<%.2f",
+             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—", DAILY_BONUS, WAGER_RESET_THRESHOLD)
     task_bot = asyncio.create_task(dp.start_polling(bot))
     task_crash = asyncio.create_task(crash_loop())
     yield
@@ -2167,6 +2303,7 @@ async def config():
         "maintenance": MAINTENANCE, "games_enabled": GAMES_ENABLED,
         "channel_url": CHANNEL_URL,
         "daily_bonus": DAILY_BONUS, "bonus_cooldown_h": BONUS_COOLDOWN_H,
+        "wager_reset_threshold": WAGER_RESET_THRESHOLD,
         "rtp": round(1 - HOUSE_EDGE, 4),
         "payouts": {"dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
                     "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
@@ -2394,6 +2531,8 @@ async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
     if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "валюта не поддерживается")
     p = await get_or_create_profile(user)
     await ensure_not_banned(p); await check_rate_limit(p["id"], "withdraw")
+    await check_and_reset_wager_if_broke(p["id"])
+    p = await get_or_create_profile(user)
     await check_wager_lock(p)
     if float(p["balance"]) < amount: raise HTTPException(400, "insufficient balance")
     try: payout = await do_withdraw(p, user["id"], amount, currency)
@@ -2405,28 +2544,44 @@ async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
 @app.post("/api/webhook/xrocket")
 async def xrocket_webhook(request: Request):
     raw = await request.body()
-    sig = request.headers.get("Signature"); ver = request.headers.get("Signature-Version")
-    ts = request.headers.get("Signature-Timestamp")
-    if not all([sig, ver, ts]): raise HTTPException(401, "missing sig")
-    if ver != "v1": raise HTTPException(401, "unsupported")
-    if abs(int(time.time() * 1000) - int(ts)) > 300_000: raise HTTPException(401, "too old")
-    expected = hmac.new(XROCKET_WEBHOOK_SECRET.encode(),
-                        f"{ts}.{raw.decode()}".encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, sig): raise HTTPException(401, "bad sig")
+    sig = request.headers.get("Signature")
+    ver = request.headers.get("Signature-Version")
+    ts  = request.headers.get("Signature-Timestamp")
+
+    if not all([sig, ver, ts]):
+        raise HTTPException(401, "missing sig")
+    if ver != "v1":
+        raise HTTPException(401, "unsupported version")
+    if abs(int(time.time() * 1000) - int(ts)) > 300_000:
+        raise HTTPException(401, "timestamp too old")
+
+    expected = hmac.new(
+        XROCKET_WEBHOOK_SECRET.encode(),
+        f"{ts}.{raw.decode()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        raise HTTPException(401, "bad signature")
+
     event = json.loads(raw)
+    log.info("xRocket webhook: %s", event)
+
     if event.get("type") == "invoice" and event.get("status") == "paid":
-        cid = event.get("clientInvoiceId") or event.get("payload") or event.get("invoiceId")
+        cid = (event.get("clientInvoiceId")
+               or (event.get("invoice") or {}).get("clientInvoiceId")
+               or (event.get("payload") or {}).get("clientInvoiceId"))
         if cid:
             tx = (await sb(supabase.table("transactions").select("*")
-                           .eq("external_id", str(cid)).eq("status", "pending"))).data
-            if not tx:
-                tx = (await sb(supabase.table("transactions").select("*")
-                               .eq("meta->>invoice_id", str(cid)).eq("status", "pending"))).data
+                           .eq("external_id", str(cid))
+                           .eq("status", "pending"))).data
             if tx:
                 row = tx[0]
-                await sb_rpc("change_balance", {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
-                await sb(supabase.table("transactions").update({"status": "completed"}).eq("id", row["id"]))
+                await sb_rpc("change_balance",
+                             {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
+                await sb(supabase.table("transactions")
+                         .update({"status": "completed"}).eq("id", row["id"]))
                 log.info("deposit credited: %s", cid)
+
     return {"ok": True}
 
 # ================== CRASH API ==================
@@ -2547,6 +2702,8 @@ async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
     await log_round(p["id"], "dice", bet, {"result": result, "chosen": chosen, "win": win},
                     profit, ss, nonce)
+    if not win:
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
     return {"ok": True, "result": result, "win": win, "profit": profit, "payout": payout}
 
 @app.post("/api/games/plinko/drop")
@@ -2576,6 +2733,8 @@ async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
     await log_round(p["id"], "plinko", bet, {"rows": rows, "slot": idx, "mult": mult},
                     profit, ss, nonce)
+    if profit < 0:
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
     return {"ok": True, "slot": idx, "mult": mult, "payout": payout, "profit": profit,
             "rows": rows, "path": path}
 
@@ -2661,6 +2820,7 @@ async def bj_hit(user: dict = Depends(get_current_user)):
                         -float(st["bet"]), ar["server_seed"], ar["nonce"])
         asyncio.create_task(credit_referrer_on_loss(p["id"], float(st["bet"])))
         await clear_active_round(p["id"])
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
         return {"ok": True, "player": st["player"], "dealer": st["dealer"],
                 "player_value": pv, "dealer_value": bj_value(st["dealer"]),
                 "finished": True, "win": False, "push": False,
@@ -2697,6 +2857,8 @@ async def bj_stand(user: dict = Depends(get_current_user)):
                     {"player": st["player"], "dealer": st["dealer"], "win": win, "push": push},
                     profit, ar["server_seed"], ar["nonce"])
     await clear_active_round(p["id"])
+    if not win and not push:
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
     return {"ok": True, "player": st["player"], "dealer": st["dealer"],
             "player_value": pv, "dealer_value": dv,
             "finished": True, "win": win, "push": push,
@@ -2764,6 +2926,7 @@ async def tower_step(body: dict, user: dict = Depends(get_current_user)):
                         -bet, ar["server_seed"], ar["nonce"])
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
         await clear_active_round(p["id"])
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
         return {"ok": True, "lost": True, "mine": mine, "level": level}
     st["level"] = level + 1
     st["revealed"].append({"level": level, "door": door, "mine": mine})
@@ -2836,6 +2999,7 @@ async def mines_reveal(body: dict, user: dict = Depends(get_current_user)):
                         -bet, ar["server_seed"], ar["nonce"])
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
         await clear_active_round(p["id"])
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
         return {"ok": True, "lost": True, "mine_hit": idx, "positions": st["positions"]}
     st["revealed"].append(idx)
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
@@ -2898,6 +3062,8 @@ async def roulette_bet(body: dict, user: dict = Depends(get_current_user)):
     else:
         asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
     await log_round(p["id"], "roulette", bet, {"n": n, "bet_type": bt, "win": win}, profit, ss, nonce)
+    if not win:
+        asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
     color = "green" if n == 0 else ("red" if n in RED else "black")
     return {"ok": True, "number": n, "color": color, "win": win,
             "payout": round(bet * pm, 8) if win else 0, "profit": profit}
