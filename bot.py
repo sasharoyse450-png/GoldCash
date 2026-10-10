@@ -10,6 +10,8 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
                            InlineKeyboardButton, WebAppInfo)
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 from supabase import create_client, Client
 from aiorocket2 import xRocketClient
 
@@ -23,8 +25,11 @@ SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 XROCKET_API_KEY = os.environ["XROCKET_API_KEY"]
 XROCKET_WEBHOOK_SECRET = os.environ["XROCKET_WEBHOOK_SECRET"]
 HOUSE_EDGE = float(os.environ.get("HOUSE_EDGE", "0.05"))
-MIN_BET = float(os.environ.get("MIN_BET", "1"))
+MIN_BET = float(os.environ.get("MIN_BET", "0.1"))
 MAX_BET = float(os.environ.get("MAX_BET", "1000"))
+MIN_DEPOSIT = float(os.environ.get("MIN_DEPOSIT", "0.1"))
+MIN_WITHDRAW = float(os.environ.get("MIN_WITHDRAW", "0.5"))
+MAX_DEPOSIT = float(os.environ.get("MAX_DEPOSIT", "100000"))
 WITHDRAW_COOLDOWN_MIN = int(os.environ.get("WITHDRAW_COOLDOWN_MIN", "15"))
 DICE_PAYOUT = 5.5
 
@@ -35,13 +40,14 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 xrocket: xRocketClient | None = None
 
 crash_state = {
-    "round_id": None,
-    "status": "idle",       # idle | betting | running | crashed
-    "server_seed": None,
-    "crash_point": None,
-    "started_at": None,     # unix seconds
-    "betting_ends_at": None,
+    "round_id": None, "status": "idle", "server_seed": None,
+    "crash_point": None, "started_at": None, "betting_ends_at": None,
 }
+
+
+class AmountInput(StatesGroup):
+    deposit = State()
+    withdraw = State()
 
 
 # =================== math / PF ===================
@@ -131,12 +137,9 @@ def get_user_stats(uid):
     wins = sum(float(t["amount"]) for t in tx if t["type"] == "win")
     bets = sum(float(t["amount"]) for t in tx if t["type"] == "bet")
     return {
-        "games": len(rounds),
-        "deposits": round(deposits, 2),
-        "withdrawals": round(withdrawals, 2),
-        "bets": round(bets, 2),
-        "wins": round(wins, 2),
-        "net": round(wins - bets, 2),
+        "games": len(rounds), "deposits": round(deposits, 2),
+        "withdrawals": round(withdrawals, 2), "bets": round(bets, 2),
+        "wins": round(wins, 2), "net": round(wins - bets, 2),
     }
 
 
@@ -182,10 +185,9 @@ async def do_withdraw(profile, tg_id, amount):
     return payout
 
 
-# =================== GLOBAL CRASH LOOP ===================
+# =================== CRASH LOOP ===================
 async def crash_loop():
     global crash_state
-    # подождём инициализацию
     await asyncio.sleep(3)
     while True:
         try:
@@ -193,19 +195,14 @@ async def crash_loop():
             cp = crash_point(ss, "global", 0)
             now = time.time()
             res = supabase.table("crash_rounds").insert({
-                "status": "betting",
-                "server_seed": ss,
-                "crash_point": cp,
+                "status": "betting", "server_seed": ss, "crash_point": cp,
             }).execute()
             round_id = res.data[0]["id"]
-
             crash_state.update({
                 "round_id": round_id, "status": "betting",
                 "server_seed": ss, "crash_point": cp,
-                "started_at": None,
-                "betting_ends_at": now + CRASH_BETTING_SEC,
+                "started_at": None, "betting_ends_at": now + CRASH_BETTING_SEC,
             })
-            log.info("crash round %s: betting for %ss, crash_point=%s", round_id, CRASH_BETTING_SEC, cp)
             await asyncio.sleep(CRASH_BETTING_SEC)
 
             started = time.time()
@@ -215,7 +212,6 @@ async def crash_loop():
             }).eq("id", round_id).execute()
             crash_state["status"] = "running"
             crash_state["started_at"] = started
-            log.info("crash round %s: running", round_id)
 
             duration = max(0.4, math.log(cp) / math.log(1.07)) if cp > 1.0 else 0.4
             await asyncio.sleep(duration)
@@ -225,9 +221,7 @@ async def crash_loop():
                 "ended_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", round_id).execute()
             crash_state["status"] = "crashed"
-            log.info("crash round %s: crashed at %sx", round_id, cp)
 
-            # помечаем проигравших
             lost = supabase.table("crash_bets").select("*") \
                 .eq("round_id", round_id).eq("status", "active").execute().data or []
             for b in lost:
@@ -238,7 +232,6 @@ async def crash_loop():
             await asyncio.sleep(CRASH_COOLDOWN_SEC)
             crash_state["status"] = "idle"
             crash_state["round_id"] = None
-
         except Exception as e:
             log.exception("crash loop error: %s", e)
             await asyncio.sleep(5)
@@ -275,7 +268,8 @@ def fmt_stats(s, balance, first_name):
     )
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     p = get_or_create_profile(message.from_user.model_dump())
     await message.answer(
         f"Привет, {message.from_user.first_name}! 👋\n\n"
@@ -304,7 +298,8 @@ async def cmd_dice(message: Message):
 @dp.message(Command("deposit"))
 async def cmd_deposit(message: Message, command: CommandObject):
     try: amount = float(command.args)
-    except Exception: return await message.answer("Использование: /deposit 10")
+    except Exception: return await message.answer(f"Использование: /deposit 1 (мин {MIN_DEPOSIT})")
+    if amount < MIN_DEPOSIT: return await message.answer(f"Минимум {MIN_DEPOSIT} USDT")
     p = get_or_create_profile(message.from_user.model_dump())
     try: inv = await create_deposit_invoice(p, amount)
     except Exception as e:
@@ -312,8 +307,30 @@ async def cmd_deposit(message: Message, command: CommandObject):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])]])
     await message.answer(f"💰 Счёт на <b>{amount} USDT</b> создан.", parse_mode="HTML", reply_markup=kb)
 
+
+# =================== DEPOSIT / WITHDRAW MENUS ===================
+def deposit_kb():
+    amounts = [1, 5, 10, 25, 50, 100]
+    rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dep:{a}") for a in amounts[i:i+3]]
+            for i in range(0, len(amounts), 3)]
+    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data="dep:custom")])
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def withdraw_kb(balance):
+    amounts = [a for a in [1, 5, 10, 25, 50, 100] if a <= balance and a >= MIN_WITHDRAW]
+    rows = []
+    if amounts:
+        rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"wd:{a}") for a in amounts[i:i+3]]
+                for i in range(0, len(amounts), 3)]
+    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data="wd:custom")])
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.callback_query(F.data == "menu:main")
-async def cb_menu(cb: CallbackQuery):
+async def cb_menu(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     await cb.message.edit_text("🏠 Главное меню:", reply_markup=main_menu())
 
 @dp.callback_query(F.data == "menu:balance")
@@ -330,17 +347,26 @@ async def cb_stats(cb: CallbackQuery):
                                parse_mode="HTML", reply_markup=back_kb())
 
 @dp.callback_query(F.data == "menu:deposit")
-async def cb_deposit(cb: CallbackQuery):
-    amounts = [5, 10, 25, 50, 100, 250]
-    rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dep:{a}") for a in amounts[i:i+3]]
-            for i in range(0, len(amounts), 3)]
-    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    await cb.message.edit_text("💰 Сумма пополнения (USDT):",
-                               reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+async def cb_deposit(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text(
+        f"💰 <b>Пополнение</b>\n\nВыбери сумму или «Своя сумма» (мин. {MIN_DEPOSIT}):",
+        parse_mode="HTML", reply_markup=deposit_kb())
 
 @dp.callback_query(F.data.startswith("dep:"))
-async def cb_dep_amount(cb: CallbackQuery):
-    amount = float(cb.data.split(":")[1])
+async def cb_dep_amount(cb: CallbackQuery, state: FSMContext):
+    val = cb.data.split(":")[1]
+    if val == "custom":
+        await state.set_state(AmountInput.deposit)
+        await cb.message.edit_text(
+            f"💰 Введи сумму пополнения в USDT (например, <code>0.5</code>).\n\n"
+            f"Минимум: {MIN_DEPOSIT}.\nОтмена — /start",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:deposit")]
+            ]))
+        return
+    amount = float(val)
     p = get_or_create_profile(cb.from_user.model_dump())
     try: inv = await create_deposit_invoice(p, amount)
     except Exception as e:
@@ -353,22 +379,33 @@ async def cb_dep_amount(cb: CallbackQuery):
                                parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(F.data == "menu:withdraw")
-async def cb_withdraw(cb: CallbackQuery):
+async def cb_withdraw(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     p = get_or_create_profile(cb.from_user.model_dump())
     bal = float(p["balance"])
-    if bal < 1:
-        return await cb.answer("Минимум для вывода — 1 USDT", show_alert=True)
-    amounts = [a for a in [5, 10, 25, 50, 100, 250] if a <= bal] or [bal]
-    rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"wd:{a}") for a in amounts[i:i+3]]
-            for i in range(0, len(amounts), 3)]
-    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    await cb.message.edit_text(f"💸 Баланс: <b>{bal:.2f} ₮</b>\nВыбери сумму вывода:",
-                               parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    if bal < MIN_WITHDRAW:
+        return await cb.answer(f"Минимум для вывода — {MIN_WITHDRAW} USDT", show_alert=True)
+    await cb.message.edit_text(
+        f"💸 <b>Баланс:</b> {bal:.2f} ₮\n\nВыбери сумму или «Своя сумма» (мин. {MIN_WITHDRAW}):",
+        parse_mode="HTML", reply_markup=withdraw_kb(bal))
 
 @dp.callback_query(F.data.startswith("wd:"))
-async def cb_wd_amount(cb: CallbackQuery):
-    amount = float(cb.data.split(":")[1])
+async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
+    val = cb.data.split(":")[1]
     p = get_or_create_profile(cb.from_user.model_dump())
+    if val == "custom":
+        await state.set_state(AmountInput.withdraw)
+        await cb.message.edit_text(
+            f"💸 Введи сумму вывода в USDT (например, <code>0.5</code>).\n\n"
+            f"Твой баланс: <b>{float(p['balance']):.2f} ₮</b>.\nМинимум: {MIN_WITHDRAW}.\nОтмена — /start",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:withdraw")]
+            ]))
+        return
+    amount = float(val)
+    if amount < MIN_WITHDRAW:
+        return await cb.answer(f"Минимум {MIN_WITHDRAW} USDT", show_alert=True)
     if float(p["balance"]) < amount:
         return await cb.answer("Недостаточно средств", show_alert=True)
     try:
@@ -381,9 +418,61 @@ async def cb_wd_amount(cb: CallbackQuery):
                                parse_mode="HTML", reply_markup=back_kb())
 
 
+# =================== FSM handlers ===================
+@dp.message(AmountInput.deposit)
+async def fsm_deposit_amount(message: Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", ".").strip())
+    except Exception:
+        return await message.answer("❌ Не число. Введи сумму, например <code>0.5</code>", parse_mode="HTML")
+    if amount < MIN_DEPOSIT:
+        return await message.answer(f"❌ Минимум {MIN_DEPOSIT} USDT")
+    if amount > MAX_DEPOSIT:
+        return await message.answer(f"❌ Слишком много (макс {MAX_DEPOSIT})")
+    await state.clear()
+    p = get_or_create_profile(message.from_user.model_dump())
+    try:
+        inv = await create_deposit_invoice(p, amount)
+    except Exception as e:
+        log.exception("create_invoice failed")
+        return await message.answer(f"Ошибка: {e}", reply_markup=back_kb())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить", url=inv["link"])],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+    ])
+    await message.answer(
+        f"💰 Счёт на <b>{amount} USDT</b> создан.\n\nНажми «Оплатить», оплати в xRocket.",
+        parse_mode="HTML", reply_markup=kb)
+
+@dp.message(AmountInput.withdraw)
+async def fsm_withdraw_amount(message: Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", ".").strip())
+    except Exception:
+        return await message.answer("❌ Не число. Введи сумму, например <code>0.5</code>", parse_mode="HTML")
+    p = get_or_create_profile(message.from_user.model_dump())
+    if amount < MIN_WITHDRAW:
+        return await message.answer(f"❌ Минимум {MIN_WITHDRAW} USDT")
+    if float(p["balance"]) < amount:
+        return await message.answer(
+            f"❌ Недостаточно средств. Баланс: <b>{float(p['balance']):.2f} ₮</b>",
+            parse_mode="HTML")
+    await state.clear()
+    try:
+        await do_withdraw(p, message.from_user.id, amount)
+    except HTTPException as e:
+        return await message.answer(f"❌ {e.detail}", reply_markup=back_kb())
+    except Exception as e:
+        log.exception("payout failed")
+        return await message.answer(f"Ошибка: {e}", reply_markup=back_kb())
+    await message.answer(
+        f"✅ Выплата <b>{amount} ₮</b> отправлена на твой аккаунт xRocket.",
+        parse_mode="HTML", reply_markup=back_kb())
+
+
 # =================== DICE ===================
 def dice_bet_kb():
-    amounts = [1, 5, 10, 25, 50, 100]
+    amounts = [0.5, 1, 5, 10, 25, 50]
     rows = [[InlineKeyboardButton(text=f"{a} ₮", callback_data=f"dice_bet:{a}") for a in amounts[i:i+3]]
             for i in range(0, len(amounts), 3)]
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
@@ -446,7 +535,7 @@ async def cb_dice_num(cb: CallbackQuery):
     p2 = get_or_create_profile(cb.from_user.model_dump())
     text += f"\n\n💎 Баланс: <b>{float(p2['balance']):.2f} ₮</b>"
     again_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎲 Ещё раз", callback_data=f"dice_bet:{int(bet)}")],
+        [InlineKeyboardButton(text="🎲 Ещё раз", callback_data=f"dice_bet:{bet}")],
         [InlineKeyboardButton(text="💰 Пополнить", callback_data="menu:deposit"),
          InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
     ])
@@ -480,45 +569,36 @@ async def root(): return {"status": "ok"}
 @app.get("/api/config")
 async def config():
     return {"min_bet": MIN_BET, "max_bet": MAX_BET, "house_edge": HOUSE_EDGE,
+            "min_deposit": MIN_DEPOSIT, "min_withdraw": MIN_WITHDRAW,
             "withdraw_cooldown_min": WITHDRAW_COOLDOWN_MIN}
 
 @app.post("/api/auth")
 async def auth(user: dict = Depends(get_current_user)):
     return get_or_create_profile(user)
 
-
-# ---------- profile (defensive) ----------
 @app.get("/api/profile")
 async def profile(user: dict = Depends(get_current_user)):
     try:
         p = get_or_create_profile(user)
-        try:
-            s = get_user_stats(p["id"])
+        try: s = get_user_stats(p["id"])
         except Exception:
             log.exception("get_user_stats failed")
             s = {"games":0,"deposits":0,"withdrawals":0,"bets":0,"wins":0,"net":0}
         return {
-            "id": p["id"],
-            "telegram_id": p["telegram_id"],
-            "username": p.get("username"),
-            "first_name": p.get("first_name"),
+            "id": p["id"], "telegram_id": p["telegram_id"],
+            "username": p.get("username"), "first_name": p.get("first_name"),
             "balance": float(p["balance"]),
             "client_seed": p.get("client_seed") or "",
             "nonce": int(p.get("nonce") or 0),
             "stats": {
-                "total_games": s["games"],
-                "total_wagered": s["bets"],
-                "total_profit": s["net"],
-                "best_mult": 1.0,
-                "deposits": s["deposits"],
-                "withdrawals": s["withdrawals"],
-                "wins": s["wins"],
+                "total_games": s["games"], "total_wagered": s["bets"],
+                "total_profit": s["net"], "best_mult": 1.0,
+                "deposits": s["deposits"], "withdrawals": s["withdrawals"], "wins": s["wins"],
             },
         }
     except Exception:
         log.exception("profile endpoint failed")
         raise HTTPException(500, "profile error")
-
 
 @app.get("/api/live")
 async def live():
@@ -565,12 +645,10 @@ async def fairness(user: dict = Depends(get_current_user)):
                     "created_at": row["created_at"]})
     return out
 
-
-# ---------- payments ----------
 @app.post("/api/payments/deposit")
 async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0))
-    if amount < 1: raise HTTPException(400, "minimum deposit is 1 USDT")
+    if amount < MIN_DEPOSIT: raise HTTPException(400, f"minimum deposit is {MIN_DEPOSIT} USDT")
     p = get_or_create_profile(user)
     try: inv = await create_deposit_invoice(p, amount)
     except Exception as e:
@@ -581,7 +659,7 @@ async def api_deposit(body: dict, user: dict = Depends(get_current_user)):
 @app.post("/api/payments/withdraw")
 async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
     amount = float(body.get("amount", 0))
-    if amount < 1: raise HTTPException(400, "minimum withdrawal is 1 USDT")
+    if amount < MIN_WITHDRAW: raise HTTPException(400, f"minimum withdrawal is {MIN_WITHDRAW} USDT")
     p = get_or_create_profile(user)
     if float(p["balance"]) < amount: raise HTTPException(400, "insufficient balance")
     try: payout = await do_withdraw(p, user["id"], amount)
@@ -616,7 +694,7 @@ async def xrocket_webhook(request: Request):
     return {"ok": True}
 
 
-# =================== GLOBAL CRASH API ===================
+# =================== CRASH API ===================
 @app.get("/api/crash/state")
 async def crash_state_endpoint(user: dict = Depends(get_current_user)):
     p = get_or_create_profile(user)
@@ -626,41 +704,31 @@ async def crash_state_endpoint(user: dict = Depends(get_current_user)):
         mult = crash_mult(time.time() - crash_state["started_at"])
     elif status == "crashed":
         mult = crash_state["crash_point"] or 1.0
-
-    bets = []
-    my_bet = None
+    bets = []; my_bet = None
     rid = crash_state["round_id"]
     if rid:
         r = supabase.table("crash_bets").select("user_id, username, amount, cashout_mult, payout, status") \
             .eq("round_id", rid).order("created_at", desc=True).execute()
         for b in r.data or []:
             item = {
-                "user_id": b["user_id"],
-                "username": b.get("username") or "anon",
+                "user_id": b["user_id"], "username": b.get("username") or "anon",
                 "amount": float(b["amount"]),
                 "cashout_mult": float(b["cashout_mult"]) if b["cashout_mult"] else None,
-                "payout": float(b["payout"] or 0),
-                "status": b["status"],
+                "payout": float(b["payout"] or 0), "status": b["status"],
                 "is_me": b["user_id"] == p["id"],
             }
             bets.append(item)
-            if item["is_me"]:
-                my_bet = item
-
+            if item["is_me"]: my_bet = item
     recent = supabase.table("crash_rounds").select("crash_point, created_at") \
         .eq("status", "crashed").order("created_at", desc=True).limit(10).execute()
-
     return {
-        "status": status,
-        "mult": mult,
+        "status": status, "mult": mult,
         "crash_point": crash_state["crash_point"] if status == "crashed" else None,
         "started_at": crash_state["started_at"],
         "betting_ends_in": max(0, (crash_state.get("betting_ends_at") or 0) - time.time()) if status == "betting" else 0,
-        "bets": bets,
-        "my_bet": my_bet,
+        "bets": bets, "my_bet": my_bet,
         "recent": [{"crash_point": float(x["crash_point"])} for x in recent.data or []],
-        "balance": float(p["balance"]),
-        "round_id": rid,
+        "balance": float(p["balance"]), "round_id": rid,
     }
 
 @app.post("/api/crash/bet")
@@ -701,8 +769,7 @@ async def crash_cashout_global(user: dict = Depends(get_current_user)):
     if not b.data: raise HTTPException(400, "нет активной ставки")
     bet = b.data[0]
     amount = float(bet["amount"])
-    payout = round(amount * mult, 8)
-    profit = round(payout - amount, 8)
+    payout = round(amount * mult, 8); profit = round(payout - amount, 8)
     supabase.table("crash_bets").update({
         "status": "cashed", "cashout_mult": mult, "payout": payout,
     }).eq("id", bet["id"]).execute()
@@ -716,7 +783,7 @@ async def crash_cashout_global(user: dict = Depends(get_current_user)):
     return {"ok": True, "mult": mult, "payout": payout, "profit": profit}
 
 
-# =================== ROULETTE SHARED BETS ===================
+# =================== ROULETTE SHARED ===================
 @app.get("/api/roulette/bets")
 async def roulette_bets():
     r = supabase.table("game_rounds") \
@@ -727,18 +794,13 @@ async def roulette_bets():
         pr = row.get("profiles") or {}
         name = pr.get("first_name") or pr.get("username") or "anon"
         res = row.get("result") or {}
-        out.append({
-            "name": name,
-            "number": res.get("n"),
-            "bet_type": res.get("bet_type"),
-            "win": bool(res.get("win", False)),
-            "amount": float(row["bet_amount"]),
-            "profit": float(row["profit"]),
-        })
+        out.append({"name": name, "number": res.get("n"), "bet_type": res.get("bet_type"),
+                    "win": bool(res.get("win", False)), "amount": float(row["bet_amount"]),
+                    "profit": float(row["profit"])})
     return out
 
 
-# =================== MINES / ROULETTE (per-player) ===================
+# =================== MINES / ROULETTE ===================
 @app.post("/api/games/mines/start")
 async def mines_start(body: dict, user: dict = Depends(get_current_user)):
     bet = float(body.get("bet", 0)); mines = int(body.get("mines", 3))
