@@ -27,6 +27,18 @@
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
+  /* ============ ГЛОБАЛЬНЫЕ TRANSITIONS ============ */
+  button, .btn-accent, .btn-ghost, .submit, .quick-btn, .game-card, .row-item,
+  .inp, .balance-pill, .live-item, .tower-door, .plinko-cell, .bj-card, .mines-cell {
+    transition: background .15s ease, border-color .15s ease,
+                color .15s ease, transform .12s cubic-bezier(.34, 1.56, .64, 1),
+                box-shadow .15s ease, opacity .2s ease;
+  }
+  button:active, .btn-accent:active, .btn-ghost:active, .submit:active,
+  .quick-btn:active, .game-card:active {
+    transform: scale(.96);
+  }
+
   .brand { font-weight: 900; letter-spacing: -.04em; font-size: 20px; }
   .brand .dot { color: var(--accent); }
 
@@ -43,6 +55,7 @@
     border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 800;
     border: none; cursor: pointer;
   }
+  .btn-accent:hover { background: #fcd34d; }
   .btn-accent:active { background: var(--accent-dk); }
   .btn-ghost {
     background: var(--surface); color: var(--text);
@@ -50,6 +63,7 @@
     border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 700;
     cursor: pointer;
   }
+  .btn-ghost:hover { border-color: rgba(255,255,255,.2); }
 
   .avatar {
     width: 32px; height: 32px; border-radius: 8px;
@@ -96,9 +110,9 @@
     border: 1px solid var(--border);
     text-align: left;
     cursor: pointer;
-    transition: border-color .15s;
   }
-  .game-card:active { border-color: var(--border-hi); }
+  .game-card:hover { border-color: var(--border-hi); }
+  .game-card:active { transform: scale(.985); }
 
   .game-hero {
     position: relative;
@@ -174,19 +188,37 @@
   .nav-btn.active { color: var(--accent); }
   .nav-btn svg { width: 20px; height: 20px; }
 
-  .modal { position: fixed; inset: 0; display: none; background: rgba(0,0,0,.7); align-items: flex-end; z-index: 100; }
-  .modal.open { display: flex; }
-  .modal-box {
+  /* ============ МОДАЛКИ — плавный fade + slide ============ */
+  .modal {
+    position: fixed; inset: 0; display: flex;
+    background: rgba(0,0,0,.75);
+    align-items: flex-end; z-index: 100;
+    opacity: 0; pointer-events: none;
+    transition: opacity .22s cubic-bezier(.22, .61, .36, 1);
+  }
+  .modal.open { opacity: 1; pointer-events: auto; }
+  .modal .modal-box {
     width: 100%; background: var(--surface);
     border-top: 1px solid var(--border-hi);
     border-top-left-radius: 16px; border-top-right-radius: 16px;
     padding: 20px 20px 28px;
+    transform: translateY(100%);
+    transition: transform .3s cubic-bezier(.22, .61, .36, 1);
+    will-change: transform;
   }
-  .modal-title { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
-  .modal-close { color: var(--muted); font-size: 22px; line-height: 1; font-weight: 300; }
+  .modal.open .modal-box { transform: translateY(0); }
 
-  #modal-game { position: fixed; inset: 0; display: none; background: var(--bg); flex-direction: column; z-index: 200; }
-  #modal-game.open { display: flex; }
+  .modal-title { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
+  .modal-close { color: var(--muted); font-size: 22px; line-height: 1; font-weight: 300; padding: 4px; }
+
+  #modal-game {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    background: var(--bg); z-index: 200;
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s ease, transform .25s cubic-bezier(.22, .61, .36, 1);
+    transform: translateY(20px);
+  }
+  #modal-game.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
   #modal-rules { z-index: 9999 !important; }
   #toast { z-index: 10000; }
 
@@ -197,7 +229,7 @@
     padding: 12px 14px; font-size: 16px; color: var(--text);
     outline: none;
   }
-  .inp:focus { border-color: var(--accent); }
+  .inp:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(251,191,36,.1); }
   .inp-sm { padding: 8px 12px; font-size: 14px; }
   select.inp { appearance: none; }
 
@@ -206,8 +238,10 @@
     border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 0; font-size: 12px; font-weight: 700;
     color: var(--text);
+    cursor: pointer;
   }
-  .quick-btn:active, .quick-btn.selected { border-color: var(--accent); color: var(--accent); }
+  .quick-btn:hover { border-color: var(--border-hi); }
+  .quick-btn.selected { border-color: var(--accent); color: var(--accent); background: rgba(251,191,36,.08); }
 
   .submit {
     width: 100%; background: var(--accent); color: #0a0d12;
@@ -215,9 +249,13 @@
     padding: 14px; font-size: 15px; font-weight: 900;
     letter-spacing: -.01em;
     cursor: pointer;
+    box-shadow: 0 4px 14px rgba(251,191,36,.15);
   }
-  .submit:active { background: var(--accent-dk); }
-  .submit-green { background: var(--green); color: #031b12; }
+  .submit:hover { background: #fcd34d; box-shadow: 0 6px 20px rgba(251,191,36,.25); }
+  .submit:active { background: var(--accent-dk); box-shadow: 0 2px 8px rgba(251,191,36,.2); }
+  .submit:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+  .submit-green { background: var(--green); color: #031b12; box-shadow: 0 4px 14px rgba(16,185,129,.15); }
+  .submit-green:hover { background: #34d399; }
   .submit-green:active { background: #0a8c62; }
 
   .game-balance {
@@ -226,6 +264,7 @@
     font-weight: 800; padding: 4px 10px; border-radius: 8px; font-size: 12px;
   }
 
+  /* ============ BLACKJACK CARD ============ */
   .bj-card {
     display: inline-flex; align-items: center; justify-content: center;
     width: 54px; height: 76px;
@@ -235,6 +274,11 @@
     margin: 0 3px;
     border: 1px solid rgba(0,0,0,.15);
     box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    animation: cardIn .3s cubic-bezier(.34, 1.56, .64, 1) both;
+  }
+  @keyframes cardIn {
+    0% { opacity: 0; transform: translateY(-20px) rotate(-8deg) scale(.8); }
+    100% { opacity: 1; transform: translateY(0) rotate(0) scale(1); }
   }
   .bj-card.red { color: #d33; }
   .bj-card.back {
@@ -242,29 +286,42 @@
     color: var(--accent); font-size: 16px;
   }
 
+  /* ============ ANIMATIONS ============ */
   @keyframes balUp { 0%{color:var(--text)} 50%{color:var(--green)} 100%{color:var(--text)} }
   @keyframes balDown { 0%{color:var(--text)} 50%{color:var(--red)} 100%{color:var(--text)} }
-  .bal-flash-up { animation: balUp .5s ease; }
-  .bal-flash-down { animation: balDown .5s ease; }
+  .bal-flash-up { animation: balUp .4s ease; }
+  .bal-flash-down { animation: balDown .4s ease; }
   @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:.5} }
   .pulse-slow { animation: pulse-slow 1.6s ease-in-out infinite; }
-  @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.08)} 100%{transform:scale(1)} }
-  .pop { animation:pop .25s ease; }
+  @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.1)} 100%{transform:scale(1)} }
+  .pop { animation:pop .22s ease; }
   @keyframes skeleton-pulse { 0%,100%{opacity:.3} 50%{opacity:.6} }
   .skeleton { background: var(--surface-2); border-radius: 8px; animation: skeleton-pulse 1.4s ease-in-out infinite; }
   .skeleton-row { height: 48px; margin-bottom: 8px; }
+  @keyframes rowIn {
+    0% { opacity: 0; transform: translateY(-6px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
 
-  .dice-face { font-size: 96px; line-height: 1; text-align: center; }
-  @keyframes dice-roll { 0%{transform:rotate(0) scale(1)} 25%{transform:rotate(90deg) scale(1.15)} 50%{transform:rotate(180deg) scale(.9)} 75%{transform:rotate(270deg) scale(1.15)} 100%{transform:rotate(360deg) scale(1)} }
-  .dice-rolling { animation: dice-roll .5s ease infinite; }
+  .dice-face { font-size: 96px; line-height: 1; text-align: center; transition: transform .2s ease; }
+  @keyframes dice-roll {
+    0%{transform:rotate(0) scale(1)}
+    25%{transform:rotate(90deg) scale(1.15)}
+    50%{transform:rotate(180deg) scale(.9)}
+    75%{transform:rotate(270deg) scale(1.15)}
+    100%{transform:rotate(360deg) scale(1)}
+  }
+  .dice-rolling { animation: dice-roll .35s ease infinite; }
 
   .tower-row { display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; }
   .tower-door {
     flex: 1; padding: 12px 0; text-align: center; border-radius: 8px;
     background: var(--surface-2); cursor: pointer; font-weight: 700;
     border: 1px solid var(--border); font-size: 18px;
+    user-select: none;
   }
-  .tower-door.active { border-color: var(--accent); }
+  .tower-door:hover { border-color: var(--border-hi); }
+  .tower-door.active { border-color: var(--accent); background: rgba(251,191,36,.08); }
   .tower-door.safe { background: rgba(16,185,129,.15); border-color: var(--green); }
   .tower-door.mine { background: rgba(239,68,68,.15); border-color: var(--red); }
   .tower-door.locked { opacity: .35; pointer-events: none; }
@@ -278,7 +335,7 @@
   }
   .wheel {
     width: 100%; height: 100%; border-radius: 50%;
-    transition: transform 4.5s cubic-bezier(.17,.67,.12,.99);
+    transition: transform 4s cubic-bezier(.15, .8, .2, 1);
     border: 3px solid var(--surface-2);
     position: relative;
   }
@@ -288,13 +345,16 @@
     background: var(--bg); border: 2px solid var(--border-hi);
     display: flex; align-items: center; justify-content: center;
     font-weight: 900; font-size: 20px; z-index: 2; color: var(--text);
+    transition: transform .3s cubic-bezier(.34, 1.56, .64, 1);
   }
+  .wheel-center.spin { transform: translate(-50%,-50%) scale(1.15); }
 
   .row-item {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 12px;
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px;
+    animation: rowIn .25s cubic-bezier(.22, .61, .36, 1) both;
   }
   .row-av {
     width: 30px; height: 30px; border-radius: 8px;
@@ -306,10 +366,25 @@
   .row-sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
   .row-amt { font-weight: 800; font-size: 13px; }
 
+  /* ============ TOAST ============ */
   #toast {
     background: #1b202b; border: 1px solid var(--border-hi);
     border-radius: 10px; font-size: 13px; font-weight: 600;
     padding: 10px 14px;
+    opacity: 0;
+    transform: translate(-50%, -10px) scale(.95);
+    transition: opacity .22s ease, transform .28s cubic-bezier(.34, 1.56, .64, 1);
+    pointer-events: none;
+  }
+  #toast.show {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  #toast.hidden { display: block !important; }
+
+  main, #modal-game, #game-body, .modal-box {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
   }
 </style>
 </head>
@@ -507,7 +582,7 @@
     <div class="flex items-center gap-2">
       <div class="game-balance"><span>₮</span> <span id="game-balance">0.00</span></div>
       <button id="btn-rules-game" class="text-xs text-gray-500 underline">Правила</button>
-      <button class="close-modal" style="color:var(--muted); font-size:24px; line-height:1; font-weight:300;">×</button>
+      <button class="close-modal" style="color:var(--muted); font-size:24px; line-height:1; font-weight:300; padding:4px;">×</button>
     </div>
   </div>
   <div id="game-body" class="flex-1 overflow-y-auto no-scrollbar p-4"></div>
@@ -523,7 +598,7 @@
   </div>
 </div>
 
-<div id="toast" class="fixed top-20 left-1/2 -translate-x-1/2 hidden px-4 py-2 rounded-xl text-sm max-w-[90%] text-center"></div>
+<div id="toast" class="fixed top-20 left-1/2 px-4 py-2 rounded-xl text-sm max-w-[90%] text-center hidden"></div>
 
 <script>
 const API_URL = "https://goldcash-production-aeda.up.railway.app";
@@ -546,10 +621,17 @@ const RED_NUMS = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 const ROUL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
 const DICE_EMOJI = ["","⚀","⚁","⚂","⚃","⚄","⚅"];
 
-function toast(msg, ms=2500) {
+function toast(msg, ms=2200) {
   const t = document.getElementById("toast");
-  t.innerText = msg; t.classList.remove("hidden");
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.add("hidden"), ms);
+  t.innerText = msg;
+  t.classList.remove("hidden");
+  void t.offsetWidth;
+  t.classList.add("show");
+  clearTimeout(t._t);
+  t._t = setTimeout(() => {
+    t.classList.remove("show");
+    setTimeout(() => t.classList.add("hidden"), 250);
+  }, ms);
 }
 function haptic(t="light") { try { tg.HapticFeedback.impactOccurred(t); } catch {} }
 function num(v){ const x = Number(v); return isFinite(x) ? x : 0; }
@@ -575,6 +657,9 @@ document.querySelectorAll(".close-modal").forEach(b => b.addEventListener("click
   const m = e.target.closest(".modal") || e.target.closest("#modal-game");
   if (m) closeModal(m.id);
 }));
+document.querySelectorAll(".modal").forEach(m => {
+  m.addEventListener("click", e => { if (e.target === m) closeModal(m.id); });
+});
 
 async function init() {
   try { cfg = {...cfg, ...(await api("/api/config"))}; } catch {}
@@ -609,11 +694,11 @@ function updateBalance(v, animate = true) {
     const cls = target > old ? "bal-flash-up" : "bal-flash-down";
     el.classList.remove("bal-flash-up","bal-flash-down");
     void el.offsetWidth; el.classList.add(cls);
-    setTimeout(()=>el.classList.remove(cls), 600);
+    setTimeout(()=>el.classList.remove(cls), 500);
     if (gb) {
       gb.classList.remove("bal-flash-up","bal-flash-down");
       void gb.offsetWidth; gb.classList.add(cls);
-      setTimeout(()=>gb.classList.remove(cls), 600);
+      setTimeout(()=>gb.classList.remove(cls), 500);
     }
     pill.classList.add("pop"); setTimeout(()=>pill.classList.remove("pop"), 250);
   }
@@ -625,7 +710,7 @@ function updateBalance(v, animate = true) {
     if (gb) gb.innerText = target.toFixed(2);
     return;
   }
-  const dur = 400; const t0 = performance.now();
+  const dur = 350; const t0 = performance.now();
   function tick(t) {
     const k = Math.min(1, (t - t0) / dur);
     const e = 1 - Math.pow(1 - k, 3);
@@ -859,10 +944,10 @@ async function openProfile() {
         <button id="p-history" class="btn-ghost" style="padding:14px;">История</button>
         <button id="p-fair" class="btn-ghost" style="padding:14px;">Честность</button>
       </div>`;
-    document.getElementById("p-withdraw").onclick = () => { closeModal("modal-profile"); openModal("modal-withdraw"); };
-    document.getElementById("p-deposit").onclick = () => { closeModal("modal-profile"); openModal("modal-deposit"); };
-    document.getElementById("p-history").onclick = () => { closeModal("modal-profile"); openModal("modal-history"); loadHistory("games"); };
-    document.getElementById("p-fair").onclick = () => { closeModal("modal-profile"); openModal("modal-fair"); loadFairness(); };
+    document.getElementById("p-withdraw").onclick = () => { closeModal("modal-profile"); setTimeout(()=>openModal("modal-withdraw"), 200); };
+    document.getElementById("p-deposit").onclick = () => { closeModal("modal-profile"); setTimeout(()=>openModal("modal-deposit"), 200); };
+    document.getElementById("p-history").onclick = () => { closeModal("modal-profile"); setTimeout(()=>{openModal("modal-history"); loadHistory("games");}, 200); };
+    document.getElementById("p-fair").onclick = () => { closeModal("modal-profile"); setTimeout(()=>{openModal("modal-fair"); loadFairness();}, 200); };
   } catch (e) { body.innerHTML = `<div class="text-red-400 p-4 text-xs">${e.message}</div>`; }
 }
 
@@ -876,10 +961,13 @@ document.getElementById("do-deposit").addEventListener("click", async () => {
   const min = cfg.min_deposit || 0.1;
   if (!amount || amount < min) return toast(`Минимум ${min}`);
   haptic();
+  const btn = document.getElementById("do-deposit");
+  btn.disabled = true; btn.innerText = "Открываем…";
   try {
     const r = await api("/api/payments/deposit", { method:"POST", body: JSON.stringify({ amount, currency }) });
     closeModal("modal-deposit"); tg.openLink(r.link); toast("Открываем оплату…");
   } catch (e) { toast("Ошибка: " + e.message); }
+  finally { btn.disabled = false; btn.innerText = "Оплатить"; }
 });
 
 document.getElementById("do-withdraw").addEventListener("click", async () => {
@@ -889,11 +977,14 @@ document.getElementById("do-withdraw").addEventListener("click", async () => {
   if (!amount || amount < min) return toast(`Минимум ${min}`);
   if (amount > num(profile?.balance)) return toast("Недостаточно средств");
   haptic("medium");
+  const btn = document.getElementById("do-withdraw");
+  btn.disabled = true; btn.innerText = "Обработка…";
   try {
     await api("/api/payments/withdraw", { method:"POST", body: JSON.stringify({ amount, currency }) });
     closeModal("modal-withdraw"); toast("Выплата отправлена");
     updateBalance(num(profile.balance) - amount);
   } catch (e) { toast("Ошибка: " + e.message); }
+  finally { btn.disabled = false; btn.innerText = "Вывести"; }
 });
 
 document.getElementById("btn-top").addEventListener("click", () => { openModal("modal-top"); loadLeaderboard("week"); });
@@ -941,7 +1032,7 @@ function betInputRow(id="bet-input", val=0.5) {
 }
 function wireBet(scope, getEl) {
   scope.querySelectorAll(".bet-quick").forEach(b =>
-    b.onclick = () => { getEl().value = Math.min(cfg.max_bet, b.dataset.v); });
+    b.onclick = () => { getEl().value = Math.min(cfg.max_bet, b.dataset.v); haptic(); });
   scope.querySelector(".bet-minus")?.addEventListener("click", () => {
     getEl().value = Math.max(cfg.min_bet, +(Number(getEl().value||cfg.min_bet) - 0.1).toFixed(2)); });
   scope.querySelector(".bet-plus")?.addEventListener("click", () => {
@@ -987,7 +1078,7 @@ function renderCrash() {
   wireBet(body, betEl);
   refreshCrashState();
   if (crashPoll) clearInterval(crashPoll);
-  crashPoll = setInterval(refreshCrashState, 700);
+  crashPoll = setInterval(refreshCrashState, 400);
   body.querySelector("#crash-bet-btn").onclick = async () => {
     const bet = Number(betEl().value);
     if (!validateBet(bet)) return;
@@ -995,12 +1086,15 @@ function renderCrash() {
     const autoMult = autoOn ? Number(body.querySelector("#crash-auto-mult").value) : null;
     if (autoOn && (!autoMult || autoMult < 1.01 || autoMult > 100)) return toast("Авто 1.01..100");
     haptic();
+    const btn = body.querySelector("#crash-bet-btn");
+    btn.disabled = true;
     try {
       await api("/api/crash/bet", { method:"POST", body:JSON.stringify({ bet, auto_cashout_mult: autoMult }) });
       updateBalance(num(profile.balance) - bet);
       toast(autoMult ? `Принято (авто ×${autoMult})` : "Ставка принята");
       refreshCrashState();
     } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; }
   };
   body.querySelector("#crash-cashout-btn").onclick = async () => {
     haptic("medium");
@@ -1083,10 +1177,9 @@ async function refreshCrashState() {
     const countEl = body.querySelector("#crash-bets-count");
     if (countEl) countEl.innerText = String((st.bets || []).length);
     if (listEl) {
-      if (!st.bets || st.bets.length === 0) {
-        listEl.innerHTML = `<div class="text-xs text-center py-3" style="color:var(--muted);">Пока никто не поставил</div>`;
-      } else {
-        listEl.innerHTML = st.bets.map(b => {
+      const html = (!st.bets || st.bets.length === 0)
+        ? `<div class="text-xs text-center py-3" style="color:var(--muted);">Пока никто не поставил</div>`
+        : st.bets.map(b => {
           let right = ""; let color = "var(--muted)";
           if (b.status === "active") { right = `${num(b.amount).toFixed(2)}${b.auto_cashout_mult ? ' ⚡'+num(b.auto_cashout_mult).toFixed(2)+'×' : ''}`; color = "var(--accent)"; }
           else if (b.status === "cashed") { right = `+${num(b.payout - b.amount).toFixed(2)} ×${num(b.cashout_mult).toFixed(2)}`; color = "var(--green)"; }
@@ -1099,7 +1192,7 @@ async function refreshCrashState() {
             <div class="row-amt" style="color:${color}">${right}</div>
           </div>`;
         }).join("");
-      }
+      if (listEl.dataset.hash !== html) { listEl.innerHTML = html; listEl.dataset.hash = html; }
     }
     updateBalance(num(st.balance), false);
   } catch (e) {}
@@ -1136,8 +1229,7 @@ function renderMines() {
     grid.innerHTML = Array.from({length:25}, (_,i) => {
       const r = revealed.includes(i);
       const mine = positions && positions.includes(i);
-      let cls = "aspect-square rounded-lg flex items-center justify-center text-xl font-bold";
-      let style = "cursor:pointer; transition: transform .1s;";
+      let style = "cursor:pointer;";
       let inner = "";
       if (r) {
         if (lost && mine) style += "background:rgba(239,68,68,.3); border:1px solid var(--red);";
@@ -1149,7 +1241,7 @@ function renderMines() {
       } else {
         style += "background:var(--surface-2); border:1px solid var(--border);";
       }
-      return `<button class="${cls}" style="${style}" data-i="${i}">${inner}</button>`;
+      return `<button class="mines-cell aspect-square rounded-lg flex items-center justify-center text-xl font-bold" style="${style}" data-i="${i}">${inner}</button>`;
     }).join("");
   }
   renderGrid();
@@ -1158,12 +1250,15 @@ function renderMines() {
       minesCount = Number(b.dataset.n);
       body.querySelectorAll(".mines-count").forEach(x => x.classList.remove("selected"));
       b.classList.add("selected");
+      haptic();
     }
   });
   body.querySelector("#mines-start").onclick = async () => {
     const bet = Number(betEl().value);
     if (!validateBet(bet)) return;
     haptic();
+    const btn = body.querySelector("#mines-start");
+    btn.disabled = true;
     try {
       await api("/api/games/mines/start", { method:"POST", body:JSON.stringify({ bet, mines: minesCount }) });
       updateBalance(num(profile.balance) - bet);
@@ -1172,6 +1267,7 @@ function renderMines() {
       body.querySelector("#mines-result").innerHTML = "";
       renderGrid(); bindCells();
     } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; }
   };
   body.querySelector("#mines-cashout").onclick = async () => {
     haptic("medium");
@@ -1191,6 +1287,7 @@ function renderMines() {
       const idx = Number(b.dataset.i);
       if (b.dataset.locked) return;
       haptic();
+      b.dataset.locked = "1";
       try {
         const r = await api("/api/games/mines/reveal", { method:"POST", body:JSON.stringify({ cell: idx }) });
         if (r.lost) {
@@ -1201,14 +1298,13 @@ function renderMines() {
           body.querySelector("#mines-mult").innerText = "1.00×";
           body.querySelector("#mines-revealed").innerText = "0";
         } else {
-          b.dataset.locked = "1";
           b.style.background = "rgba(16,185,129,.2)";
           b.style.border = "1px solid var(--green)";
           b.innerText = "💎";
           body.querySelector("#mines-mult").innerText = `${r.mult}×`;
           body.querySelector("#mines-revealed").innerText = String(r.revealed.length);
         }
-      } catch (e) { toast(e.message); }
+      } catch (e) { toast(e.message); delete b.dataset.locked; }
     });
   }
 }
@@ -1261,6 +1357,7 @@ function renderRoulette() {
     selected = { type: b.dataset.t, value: null };
     body.querySelectorAll(".roul-bet").forEach(x => x.classList.remove("selected"));
     b.classList.add("selected");
+    haptic();
     body.querySelector("#roul-message").innerHTML = `Выбрано: <b>${b.innerText}</b>`;
   });
   body.querySelector("#roul-num-btn").onclick = () => {
@@ -1268,6 +1365,7 @@ function renderRoulette() {
     if (n < 0 || n > 36) return toast("Число 0–36");
     selected = { type: "number", value: n };
     body.querySelectorAll(".roul-bet").forEach(x => x.classList.remove("selected"));
+    haptic();
     body.querySelector("#roul-message").innerHTML = `Выбрано: <b>число ${n}</b>`;
   };
   body.querySelector("#roul-spin").onclick = async () => {
@@ -1279,6 +1377,7 @@ function renderRoulette() {
     spinBtn.disabled = true;
     body.querySelector("#roul-result").innerHTML = "";
     center.innerText = "…";
+    center.classList.add("spin");
     try {
       const r = await api("/api/games/roulette/bet", { method:"POST",
         body: JSON.stringify({ bet, type: selected.type, value: selected.value }) });
@@ -1287,6 +1386,7 @@ function renderRoulette() {
       rotation += 360 * 5 + (360 - sectorCenter - (rotation % 360));
       wheel.style.transform = `rotate(${rotation}deg)`;
       setTimeout(() => {
+        center.classList.remove("spin");
         const color = r.color === "red" ? "#ef4444" :
                       r.color === "black" ? "#e8eaed" : "#10b981";
         center.innerHTML = `<span style="color:${color}">${r.number}</span>`;
@@ -1299,8 +1399,8 @@ function renderRoulette() {
           updateBalance(num(profile.balance));
         }
         spinBtn.disabled = false;
-      }, 4600);
-    } catch (e) { toast(e.message); spinBtn.disabled = false; }
+      }, 4100);
+    } catch (e) { toast(e.message); spinBtn.disabled = false; center.classList.remove("spin"); }
   };
 }
 
@@ -1327,6 +1427,7 @@ function renderDice() {
     chosen = Number(b.dataset.n);
     body.querySelectorAll(".dice-num").forEach(x => x.classList.remove("selected"));
     b.classList.add("selected");
+    haptic();
     body.querySelector("#dice-message").innerHTML = `Выбрано: <b>${chosen}</b>`;
   });
   body.querySelector("#dice-roll").onclick = async () => {
@@ -1341,7 +1442,7 @@ function renderDice() {
     try {
       const r = await api("/api/games/dice/bet", { method:"POST",
         body: JSON.stringify({ bet, chosen }) });
-      await new Promise(res => setTimeout(res, 700));
+      await new Promise(res => setTimeout(res, 500));
       faceEl.classList.remove("dice-rolling");
       faceEl.innerText = DICE_EMOJI[r.result] || "🎲";
       const res = body.querySelector("#dice-result");
@@ -1357,17 +1458,14 @@ function renderDice() {
   };
 }
 
-/* ============ PLINKO (полностью переписан) ============ */
+/* ============ PLINKO ============ */
 function renderPlinko() {
   const body = document.getElementById("game-body");
   let rows = 12;
   let lastSlot = null;
-  let ballPos = null;
   let busy = false;
-  let currentPath = null;
-  let container = null;
+  let ballPos = null;
 
-  // строим SVG доску
   function buildSVG(mults, rowsN, lastSlotN, ball) {
     const W = 380;
     const pegGapY = 26;
@@ -1375,12 +1473,10 @@ function renderPlinko() {
     const paddingX = 20;
     const usableW = W - paddingX * 2;
     const stepX = usableW / rowsN;
-
     const pegsBottomY = paddingTop + rowsN * pegGapY;
     const slotsY = pegsBottomY + 22;
     const H = slotsY + 34;
 
-    // точки
     let pegs = "";
     for (let i = 0; i <= rowsN; i++) {
       for (let j = 0; j <= i; j++) {
@@ -1389,48 +1485,34 @@ function renderPlinko() {
         pegs += `<circle cx="${x}" cy="${y}" r="2.6" fill="rgba(255,255,255,.35)"/>`;
       }
     }
-
-    // слоты
     let slots = "";
     const slotW = stepX * 0.92;
     for (let k = 0; k <= rowsN; k++) {
       const x = W/2 + (k - rowsN/2) * stepX;
       const m = Number(mults[k]);
-      let fill;
-      let textFill = "#fff";
-      if (m >= 5) { fill = "rgba(239,68,68,.55)"; }
-      else if (m >= 2) { fill = "rgba(251,191,36,.55)"; }
+      let fill; let textFill = "#fff";
+      if (m >= 5) fill = "rgba(239,68,68,.55)";
+      else if (m >= 2) fill = "rgba(251,191,36,.55)";
       else if (m >= 1) { fill = "rgba(251,191,36,.25)"; textFill = "#fbbf24"; }
       else { fill = "rgba(255,255,255,.08)"; textFill = "var(--muted)"; }
       const stroke = k === lastSlotN ? "#fbbf24" : "none";
       slots += `<rect x="${x - slotW/2}" y="${slotsY}" width="${slotW}" height="26" rx="4" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
       slots += `<text x="${x}" y="${slotsY + 17}" font-size="10" font-weight="800" fill="${textFill}" text-anchor="middle" font-family="-apple-system, sans-serif">${m}×</text>`;
     }
-
-    // шарик
     let ballHtml = "";
     if (ball) {
       ballHtml = `<circle cx="${ball.x}" cy="${ball.y}" r="6" fill="#fbbf24" stroke="#fff" stroke-width="2" style="filter:drop-shadow(0 0 8px rgba(251,191,36,.8))"/>`;
     }
-
     return { svg: `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block">${pegs}${slots}${ballHtml}</svg>`,
              W, H, paddingTop, pegGapY, stepX };
   }
-
   function pegCoords(rowIdx, colIdx, geo) {
-    return {
-      x: geo.W/2 + (colIdx - rowIdx/2) * geo.stepX,
-      y: geo.paddingTop + rowIdx * geo.pegGapY,
-    };
+    return { x: geo.W/2 + (colIdx - rowIdx/2) * geo.stepX, y: geo.paddingTop + rowIdx * geo.pegGapY };
   }
   function slotCoords(slotIdx, geo) {
-    const slotsY = geo.paddingTop + rows * geo.pegGapY + 22 + 13;
-    return {
-      x: geo.W/2 + (slotIdx - rows/2) * geo.stepX,
-      y: slotsY,
-    };
+    return { x: geo.W/2 + (slotIdx - rows/2) * geo.stepX,
+             y: geo.paddingTop + rows * geo.pegGapY + 22 + 13 };
   }
-
   function drawAll() {
     const mults = cfg.payouts.plinko[rows] || [];
     const geo = buildSVG(mults, rows, lastSlot, ballPos);
@@ -1452,11 +1534,10 @@ function renderPlinko() {
     wireBet(body, betEl);
     body.querySelectorAll(".plinko-rows").forEach(b => b.onclick = () => {
       if (busy) return;
-      rows = Number(b.dataset.n); lastSlot = null; ballPos = null; drawAll();
+      rows = Number(b.dataset.n); lastSlot = null; ballPos = null; haptic(); drawAll();
     });
     body.querySelector("#plinko-drop").onclick = onDrop;
   }
-
   async function onDrop() {
     if (busy) return;
     const bet = Number(body.querySelector("#plinko-bet").value);
@@ -1468,60 +1549,39 @@ function renderPlinko() {
     body.querySelector("#plinko-result").innerHTML = "";
     const mults = cfg.payouts.plinko[rows] || [];
     const geo = buildSVG(mults, rows, null, null);
-
-    // стартовое положение шарика
-    let curRow = -1;
-    let curCol = 0;
     ballPos = { x: geo.W/2, y: geo.paddingTop - 14 };
     lastSlot = null;
     drawAll();
-
     try {
       const r = await api("/api/games/plinko/drop", { method:"POST", body: JSON.stringify({ bet, rows }) });
       const path = r.path || [];
       const mults2 = cfg.payouts.plinko[r.rows] || mults;
       const geo2 = buildSVG(mults2, r.rows, null, null);
-
       const m = body.querySelector("#plinko-message");
       m.innerHTML = "Шарик падает…";
-
-      // идём по шагам
       let colAcc = 0;
       for (let i = 0; i < r.rows; i++) {
         colAcc += path[i];
         const pos = pegCoords(i + 1, colAcc, geo2);
         ballPos = pos;
-        // красный svg с шаром
         const container = body.querySelector("#plinko-container");
-        const built = buildSVG(mults2, r.rows, null, ballPos);
-        container.innerHTML = built.svg;
+        container.innerHTML = buildSVG(mults2, r.rows, null, ballPos).svg;
         haptic("light");
-        await new Promise(res => setTimeout(res, 110));
+        await new Promise(res => setTimeout(res, 90));
       }
-
-      // упал в слот
       lastSlot = r.slot;
       const slotPos = slotCoords(r.slot, geo2);
       ballPos = slotPos;
-      const container2 = body.querySelector("#plinko-container");
-      const built2 = buildSVG(mults2, r.rows, lastSlot, ballPos);
-      container2.innerHTML = built2.svg;
-
-      m.innerHTML = `Упал в слот <b>${r.slot}</b> — <b>×${r.mult}</b>`;
-
+      body.querySelector("#plinko-container").innerHTML = buildSVG(mults2, r.rows, lastSlot, ballPos).svg;
+      m.innerHTML = `Слот <b>${r.slot}</b> — <b>×${r.mult}</b>`;
       const res = body.querySelector("#plinko-result");
       if (r.profit > 0) res.innerHTML = `<span style="color:var(--green); font-weight:700;">+${num(r.profit).toFixed(2)}</span>`;
       else if (r.profit < 0) res.innerHTML = `<span style="color:var(--red); font-weight:700;">−${Math.abs(num(r.profit)).toFixed(2)}</span>`;
       else res.innerHTML = `<span style="color:var(--muted);">Возврат</span>`;
       updateBalance(num(profile.balance) + num(r.payout));
-    } catch (e) {
-      toast(e.message);
-    } finally {
-      busy = false;
-      btn.disabled = false;
-    }
+    } catch (e) { toast(e.message); }
+    finally { busy = false; btn.disabled = false; }
   }
-
   drawAll();
 }
 
@@ -1568,12 +1628,15 @@ function renderBlackjack() {
         const bet = Number(betEl().value);
         if (!validateBet(bet)) return;
         haptic("medium");
+        const btn = controls.querySelector("#bj-start");
+        btn.disabled = true;
         try {
           const r = await api("/api/games/blackjack/start", { method:"POST", body:JSON.stringify({ bet }) });
           if (!r.resumed) updateBalance(num(profile.balance) - bet);
           drawGame({ ...r, bet });
           if (r.finished) showResult(r);
         } catch (e) { toast(e.message); }
+        finally { if (btn) btn.disabled = false; }
       };
     } else {
       controls.innerHTML = `
@@ -1685,6 +1748,8 @@ function renderTower() {
         const bet = Number(betEl().value);
         if (!validateBet(bet)) return;
         haptic("medium");
+        const btn = body.querySelector("#tower-start");
+        btn.disabled = true;
         try {
           const r = await api("/api/games/tower/start", { method:"POST", body:JSON.stringify({ bet }) });
           if (!r.resumed) updateBalance(num(profile.balance) - bet);
@@ -1692,6 +1757,7 @@ function renderTower() {
           currentLevel = r.level || 0;
           drawAll(initialRevealed);
         } catch (e) { toast(e.message); }
+        finally { if (btn) btn.disabled = false; }
       };
     } else {
       body.querySelector("#tower-cashout").onclick = async () => {
@@ -1701,7 +1767,7 @@ function renderTower() {
           updateBalance(num(profile.balance) + num(r.payout));
           body.querySelector("#tower-result").innerHTML = `<span style="color:var(--green); font-weight:700;">Забрано +${num(r.profit).toFixed(2)} (×${r.mult})</span>`;
           active = false;
-          setTimeout(() => { currentLevel = 0; initialRevealed = []; drawAll([]); }, 2000);
+          setTimeout(() => { currentLevel = 0; initialRevealed = []; drawAll([]); }, 1800);
         } catch (e) { toast(e.message); }
       };
       bindDoors();
@@ -1728,7 +1794,7 @@ function renderTower() {
               } else el2.innerText = "🚪";
             });
             body.querySelector("#tower-result").innerHTML = `<span style="color:var(--red); font-weight:700;">💥 Мина на уровне ${currentLevel+1}</span>`;
-            setTimeout(() => { currentLevel = 0; initialRevealed = []; drawAll([]); }, 2000);
+            setTimeout(() => { currentLevel = 0; initialRevealed = []; drawAll([]); }, 1800);
           } else {
             currentLevel = r.level;
             const revealed = [];
