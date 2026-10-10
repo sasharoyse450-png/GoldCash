@@ -66,7 +66,6 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-# =================== Supabase async ===================
 async def sb(builder):
     return await asyncio.to_thread(builder.execute)
 
@@ -97,13 +96,10 @@ async def xrocket_request(method: str, path: str, body: dict | None = None) -> d
 
 
 async def xrocket_create_invoice(amount: float, description: str, req_id: str) -> dict:
-    """Создать счёт на пополнение (Pay API)."""
     payload = {
-        "amount": str(amount),
-        "currency": "USDT",
+        "amount": float(amount),
+        "asset": "USDT",
         "description": description,
-        "numPayments": 1,
-        "minPayment": 0,
         "clientInvoiceId": req_id,
     }
     data = await xrocket_request("POST", "/api/v1/invoices", payload)
@@ -115,17 +111,16 @@ async def xrocket_create_invoice(amount: float, description: str, req_id: str) -
 
 
 async def xrocket_create_payout(user_id: int, amount: float, comment: str, req_id: str) -> dict:
-    """Создать выплату (Pay API)."""
+    """Pay API: только target, asset, amount, description, clientPayoutId."""
     payload = {
-        "clientPayoutId": req_id,
         "target": str(user_id),
-        "targetType": "telegram_user_id",
         "asset": "USDT",
-        "amount": str(amount),
+        "amount": float(amount),
         "description": comment,
+        "clientPayoutId": req_id,
     }
     data = await xrocket_request("POST", "/api/v1/payouts", payload)
-    payout_id = data.get("payoutId") or data.get("id")
+    payout_id = data.get("id") or data.get("payoutId")
     return {"id": payout_id, "raw": data}
 
 
@@ -644,7 +639,14 @@ async def cmd_deposit(message: Message, command: CommandObject):
 async def cmd_withdraw(message: Message, command: CommandObject):
     p = await get_or_create_profile(message.from_user.model_dump())
     if not command.args:
-        return await cb_withdraw_dispatch(message, p)
+        return await message.answer(
+            f"💸 <b>Вывод</b>\n"
+            f"Баланс: <b>{float(p['balance']):.2f} ₮</b>\n"
+            f"Минимум: {MIN_WITHDRAW} ₮\n\n"
+            f"<b>⚠️ Важно:</b> средства приходят на твой аккаунт <b>@xRocket</b>. "
+            f"Если ты ещё не зарегистрирован — сначала зайди в @xRocket, иначе выплата не дойдёт.\n\n"
+            f"Использование: /withdraw 5",
+            parse_mode="HTML", reply_markup=back_kb())
     try: amount = float(command.args.replace(",", ".").strip())
     except: return await message.answer("Использование: /withdraw 5")
     if amount < MIN_WITHDRAW:
@@ -762,6 +764,8 @@ async def cb_withdraw_dispatch(cb, p):
         f"Баланс: <b>{bal:.2f} ₮</b>\n"
         f"Лимит/сутки: <b>{max(0,left):.2f} ₮</b> из {MAX_WITHDRAW_DAILY:.0f} ₮\n"
         f"Минимум: {MIN_WITHDRAW} ₮{hint}\n\n"
+        f"<b>⚠️ Важно:</b> средства приходят на твой аккаунт <b>@xRocket</b>. "
+        f"Если ты ещё не зарегистрирован в xRocket — сначала зайди туда, иначе выплата не дойдёт.\n\n"
         f"Выбери сумму или «Своя сумма»:",
         parse_mode="HTML", reply_markup=withdraw_kb(bal))
 
@@ -772,7 +776,9 @@ async def cb_wd_amount(cb: CallbackQuery, state: FSMContext):
     if val == "custom":
         await state.set_state(AmountInput.withdraw)
         await cb.message.edit_text(
-            f"💸 Введи сумму вывода (мин. {MIN_WITHDRAW}).\nБаланс: <b>{float(p['balance']):.2f} ₮</b>\nОтмена — /start",
+            f"💸 Введи сумму вывода (мин. {MIN_WITHDRAW}).\n"
+            f"Баланс: <b>{float(p['balance']):.2f} ₮</b>\n\n"
+            f"<b>⚠️ Средства придут на @xRocket.</b>\nОтмена — /start",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:withdraw")]]))
