@@ -207,7 +207,7 @@ KENO_PAYOUTS = {
     10: {0: 0, 1: 0, 2: 0.3, 3: 0.8, 4: 2, 5: 6, 6: 25, 7: 100, 8: 500, 9: 2500, 10: 25000},
 }
 
-# ================== HI-LO (higher/same, lower/same) ==================
+# ================== HI-LO ==================
 HILO_TOTAL = 13
 HILO_NAMES = {1:"A",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K"}
 HILO_EDGE = 0.01
@@ -226,7 +226,7 @@ def hilo_draw_card(ss, cs, nonce, step):
     r = pf_rand(ss, cs, nonce * 100 + step)
     return int(r * HILO_TOTAL) + 1
 
-# ================== SCRATCH (9-cell, always triplet) ==================
+# ================== SCRATCH ==================
 SCRATCH_SYMBOLS = ["0x", "0.5x", "1x", "2x", "2.5x", "4x", "5x", "7.5x", "10x", "14x"]
 SCRATCH_VALUES  = [0.0, 0.5, 1.0, 2.0, 2.5, 4.0, 5.0, 7.5, 10.0, 14.0]
 
@@ -442,7 +442,6 @@ class SubscriptionMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if user is None:
             return await handler(event, data)
-        # пропускаем только /start и check_sub
         try:
             if hasattr(event, "text") and event.text and event.text.startswith("/start"):
                 return await handler(event, data)
@@ -513,7 +512,6 @@ async def xrocket_create_payout(user_id, amount, comment, client_id, currency="U
     return {"id": payout_id, "status": status, "raw": data}
 
 async def xrocket_get_invoice(invoice_id: str):
-    """Проверяет статус инвойса в xRocket."""
     try:
         data = await xrocket_request("GET", f"/api/v1/invoices/{invoice_id}")
         return data
@@ -522,7 +520,6 @@ async def xrocket_get_invoice(invoice_id: str):
         return None
 
 async def check_pending_deposits(user_id: str):
-    """Проверяет все pending-депозиты юзера и зачисляет оплаченные."""
     try:
         r = await sb(supabase.table("transactions")
                      .select("*")
@@ -2526,7 +2523,6 @@ def _profile_sync(user):
 @app.get("/api/profile")
 async def profile(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
-    # проверяем pending депозиты в фоне
     asyncio.create_task(check_pending_deposits(p["id"]))
     return await asyncio.to_thread(_profile_sync, user)
 
@@ -2752,6 +2748,7 @@ async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
         log.exception("payout failed"); raise HTTPException(400, str(e))
     return {"ok": True, "payout_id": payout.get("id")}
 
+# ================== FIXED WEBHOOK ==================
 @app.post("/api/webhook/xrocket")
 async def xrocket_webhook(request: Request):
     raw = await request.body()
@@ -2779,96 +2776,101 @@ async def xrocket_webhook(request: Request):
         hashlib.sha256,
     ).hexdigest()
     if not hmac.compare_digest(expected, sig):
-        log.error("webhook BAD SIGNATURE expected=%s got=%s", expected, sig)
+        log.error("webhook BAD SIGNATURE")
         raise HTTPException(401, "bad sig")
 
     event = json.loads(raw)
-    log.info("✅ xRocket webhook verified: %s", event)
+    log.info("✅ xRocket webhook verified")
 
-    etype  = event.get("type")
-    status = event.get("status")
+    # ============ РАЗБОР ВЛОЖЕННОЙ СТРУКТУРЫ ============
+    # xRocket шлёт: {"data": {"event": "...", "invoice": {...}, "payment": {...}}, "type": "invoice"}
+    data_block = event.get("data") or {}
+    outer_type = event.get("type")
+    inner_event = data_block.get("event") or ""
+
+    invoice = data_block.get("invoice") or {}
+    payment = data_block.get("payment") or {}
+
+    cid = invoice.get("clientInvoiceId") or data_block.get("clientInvoiceId")
+    invoice_id = invoice.get("id") or data_block.get("invoiceId")
+    inv_status = (invoice.get("status") or "").lower()
+
+    log.info("📦 parsed: outer_type=%s inner_event=%s cid=%s invoice_id=%s status=%s",
+             outer_type, inner_event, cid, invoice_id, inv_status)
 
     # ============ ДЕПОЗИТ ============
-    if etype == "invoice" and status == "paid":
-        cid = (
-            event.get("clientInvoiceId")
-            or (event.get("invoice") or {}).get("clientInvoiceId")
-            or (event.get("payload") or {}).get("clientInvoiceId")
-            or event.get("payload")
-            or (event.get("invoice") or {}).get("payload")
-        )
-        invoice_id = (
-            event.get("invoiceId")
-            or event.get("id")
-            or (event.get("invoice") or {}).get("id")
-        )
-        log.info("💰 invoice paid: cid=%s invoice_id=%s", cid, invoice_id)
+    if outer_type == "invoice" and inner_event == "invoice_status_changed":
+        if inv_status in ("paid", "completed", "success"):
+            if not cid and not invoice_id:
+                log.warning("⚠️ no cid / invoice_id in webhook")
+                return {"ok": True}
 
-        tx = []
-        if cid:
-            tx = (await sb(supabase.table("transactions").select("*")
-                           .eq("external_id", str(cid))
-                           .eq("status", "pending"))).data or []
-        if not tx and invoice_id:
-            tx = (await sb(supabase.table("transactions").select("*")
-                           .eq("meta->>invoice_id", str(invoice_id))
-                           .eq("status", "pending"))).data or []
+            tx = []
+            if cid:
+                tx = (await sb(supabase.table("transactions").select("*")
+                               .eq("external_id", str(cid))
+                               .eq("status", "pending"))).data or []
+            if not tx and invoice_id:
+                tx = (await sb(supabase.table("transactions").select("*")
+                               .eq("meta->>invoice_id", str(invoice_id))
+                               .eq("status", "pending"))).data or []
 
-        if tx:
-            row = tx[0]
-            await sb_rpc("change_balance",
-                         {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
-            await sb(supabase.table("transactions").update({
-                "status": "completed",
-                "meta": {"credited_at": datetime.now(timezone.utc).isoformat(),
-                         "invoice_id": invoice_id},
-            }).eq("id", row["id"]))
-            log.info("✅ DEPOSIT CREDITED user=%s amount=%s", row["user_id"], row["amount"])
-
-            try:
-                prof = (await sb(supabase.table("profiles")
-                                 .select("first_name, username, telegram_id")
-                                 .eq("id", row["user_id"]))).data
-                if prof:
-                    pr = prof[0]
-                    nm = pr.get("first_name") or pr.get("username") or "anon"
-                    for aid in ADMIN_IDS:
-                        try:
-                            await bot.send_message(
-                                aid,
-                                f"💰 <b>Депозит зачислен</b>\n"
-                                f"👤 {nm} (<code>{pr['telegram_id']}</code>)\n"
-                                f"+{float(row['amount']):.2f} {row.get('currency','USDT')}",
-                                parse_mode="HTML")
-                        except: pass
-            except: pass
-        else:
-            log.warning("⚠️ transaction not found for cid=%s invoice_id=%s", cid, invoice_id)
-
-    # ============ ВЫВОД ============
-    if etype == "payout":
-        cid = (
-            event.get("clientPayoutId")
-            or (event.get("payout") or {}).get("clientPayoutId")
-            or (event.get("payload") or {}).get("clientPayoutId")
-        )
-        if cid:
-            tx = (await sb(supabase.table("transactions").select("*")
-                           .eq("external_id", str(cid)))).data or []
             if tx:
                 row = tx[0]
-                if status in ("completed", "paid", "success"):
+                await sb_rpc("change_balance",
+                             {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
+                await sb(supabase.table("transactions").update({
+                    "status": "completed",
+                    "meta": {**(row.get("meta") or {}),
+                             "credited_at": datetime.now(timezone.utc).isoformat(),
+                             "invoice_id": invoice_id,
+                             "source": "webhook"},
+                }).eq("id", row["id"]))
+                log.info("✅ DEPOSIT CREDITED user=%s amount=%s", row["user_id"], row["amount"])
+
+                try:
+                    prof = (await sb(supabase.table("profiles")
+                                     .select("first_name, username, telegram_id")
+                                     .eq("id", row["user_id"]))).data
+                    if prof:
+                        pr = prof[0]
+                        nm = pr.get("first_name") or pr.get("username") or "anon"
+                        for aid in ADMIN_IDS:
+                            try:
+                                await bot.send_message(
+                                    aid,
+                                    f"💰 <b>Депозит зачислен</b>\n"
+                                    f"👤 {nm} (<code>{pr['telegram_id']}</code>)\n"
+                                    f"+{float(row['amount']):.2f} {row.get('currency','USDT')}",
+                                    parse_mode="HTML")
+                            except: pass
+                except: pass
+            else:
+                log.warning("⚠️ transaction not found: cid=%s invoice_id=%s", cid, invoice_id)
+
+    # ============ ВЫВОД ============
+    if outer_type == "payout" or inner_event == "payout_status_changed":
+        payout = data_block.get("payout") or {}
+        pcid = (payout.get("clientPayoutId")
+                or data_block.get("clientPayoutId"))
+        pstatus = (payout.get("status") or "").lower()
+        if pcid:
+            tx = (await sb(supabase.table("transactions").select("*")
+                           .eq("external_id", str(pcid)))).data or []
+            if tx:
+                row = tx[0]
+                if pstatus in ("completed", "paid", "success"):
                     await sb(supabase.table("transactions")
                              .update({"status": "completed"}).eq("id", row["id"]))
-                    log.info("✅ payout completed: %s", cid)
-                elif status in ("failed", "rejected", "cancelled"):
+                    log.info("✅ payout completed: %s", pcid)
+                elif pstatus in ("failed", "rejected", "cancelled"):
                     await sb_rpc("change_balance",
                                  {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
                     await sb(supabase.table("transactions")
                              .update({"status": "failed",
-                                      "meta": {"error": event.get("reason", "unknown")}})
+                                      "meta": {"error": (payout.get("reason") or "unknown")}})
                              .eq("id", row["id"]))
-                    log.warning("❌ payout failed, refunded: %s", cid)
+                    log.warning("❌ payout failed, refunded: %s", pcid)
 
     return {"ok": True}
 
