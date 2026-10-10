@@ -7,9 +7,9 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                           InlineKeyboardButton, WebAppInfo)
+                           InlineKeyboardButton, WebAppInfo, TelegramObject)
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -25,6 +25,9 @@ SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 XROCKET_API_KEY = os.environ["XROCKET_API_KEY"]
 XROCKET_WEBHOOK_SECRET = os.environ["XROCKET_WEBHOOK_SECRET"]
 XROCKET_API_BASE = os.environ.get("XROCKET_API_BASE", "https://pay.api.xrocket.exchange")
+
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
+CHANNEL_URL = os.environ.get("CHANNEL_URL", "")
 
 HOUSE_EDGE = float(os.environ.get("HOUSE_EDGE", "0.04"))
 MIN_BET = float(os.environ.get("MIN_BET", "0.1"))
@@ -52,7 +55,6 @@ CRASH_COOLDOWN_SEC = 4
 MAINTENANCE = False
 START_TIME = time.time()
 
-# ---- ВКЛ/ВЫКЛ ИГР ----
 GAMES_ENABLED = {
     "crash": True, "mines": True, "roulette": True, "dice": True,
     "plinko": True, "blackjack": True, "tower": True,
@@ -110,6 +112,68 @@ async def ensure_not_banned(profile):
     if profile.get("is_banned"):
         reason = profile.get("ban_reason") or "нарушение правил"
         raise HTTPException(403, f"аккаунт заблокирован: {reason}")
+
+
+# =================== ПОДПИСКА ===================
+async def is_subscribed(user_id: int) -> bool:
+    """Проверяет подписку на канал. Админы всегда True. Если CHANNEL_ID пуст — True (fail open)."""
+    if is_admin(user_id):
+        return True
+    if not CHANNEL_ID:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        log.warning("is_subscribed failed for %s: %s", user_id, e)
+        return True
+
+
+def sub_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")],
+    ])
+
+
+async def send_sub_prompt(message: Message):
+    if not CHANNEL_URL:
+        return
+    await message.answer(
+        "🔒 <b>Доступ только для подписчиков</b>\n\n"
+        f"Чтобы пользоваться ботом, подпишись на наш канал:\n"
+        f"👉 <a href=\"{CHANNEL_URL}\">{CHANNEL_URL.replace('https://t.me/', '@')}</a>\n\n"
+        "После подписки нажми кнопку <b>«Я подписался»</b>.",
+        parse_mode="HTML",
+        reply_markup=sub_kb(),
+        disable_web_page_preview=True,
+    )
+
+
+class SubscriptionMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if user is None:
+            return await handler(event, data)
+        try:
+            if hasattr(event, "text") and event.text and event.text.startswith("/start"):
+                return await handler(event, data)
+            if hasattr(event, "data") and event.data == "check_sub":
+                return await handler(event, data)
+        except Exception:
+            pass
+        if not await is_subscribed(user.id):
+            if isinstance(event, CallbackQuery):
+                try: await event.answer("🔒 Сначала подпишись на канал", show_alert=True)
+                except: pass
+                try: await send_sub_prompt(event.message)
+                except: pass
+                return
+            try:
+                await send_sub_prompt(event)
+            except: pass
+            return
+        return await handler(event, data)
 
 
 # =================== xRocket ===================
@@ -242,9 +306,12 @@ async def get_current_user(x_telegram_init_data: str = Header(None, alias="X-Tel
     if not x_telegram_init_data: raise HTTPException(401, "missing init data")
     u = validate_init_data(x_telegram_init_data, BOT_TOKEN)
     if not u: raise HTTPException(401, "invalid init data")
+    if not await is_subscribed(int(u["id"])):
+        raise HTTPException(403, "subscription required")
     return u
 
 
+# =================== DB helpers ===================
 async def get_or_create_profile(tg_user):
     tg_id = int(tg_user["id"])
     r = await sb(supabase.table("profiles").select("*").eq("telegram_id", tg_id))
@@ -304,6 +371,7 @@ def referral_info_sync(profile):
     return {"link": ref_link, "share": REFERRAL_SHARE}
 
 
+# =================== payments ===================
 async def create_deposit_invoice(profile, amount, currency="USDT"):
     if currency not in SUPPORTED_CURRENCIES: raise HTTPException(400, "неподдерживаемая валюта")
     cid = f"dep_{profile['id'][:8]}_{int(time.time())}"
@@ -348,6 +416,7 @@ async def do_withdraw(profile, tg_id, amount, currency="USDT"):
     return payout
 
 
+# =================== crash loop ===================
 async def crash_auto_cashout_watcher(round_id: str, started_at: float, crash_point_val: float):
     try:
         while True:
@@ -427,6 +496,7 @@ async def crash_loop():
             await asyncio.sleep(5)
 
 
+# =================== aiogram ===================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -437,6 +507,7 @@ def main_menu():
          InlineKeyboardButton(text="💸 Вывести", callback_data="menu:withdraw")],
         [InlineKeyboardButton(text="👥 Друзья (5%)", callback_data="menu:ref"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
+        [InlineKeyboardButton(text="📖 Помощь", callback_data="menu:help")],
         [InlineKeyboardButton(text="🌐 Открыть казино", web_app=WebAppInfo(url=WEBAPP_URL))]])
 
 def back_kb():
@@ -474,80 +545,41 @@ async def cmd_ahelp(message: Message):
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎮 Управление играми</b>\n"
         "/astatus — какие игры вкл/выкл\n"
-        "/aon GAME — включить игру\n"
-        "/aoff GAME — выключить игру\n"
-        "/aonall — включить все игры\n"
-        "/aoffall — выключить все игры\n"
+        "/aon GAME · /aoff GAME\n"
+        "/aonall · /aoffall\n"
         "Игры: crash, mines, roulette, dice, plinko, blackjack, tower\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "<b>🎮 Активные игры юзеров</b>\n"
-        "/aendgame ID [lose] — завершить игру (с возвратом / без)\n"
-        "/aendgameall — завершить все игры с возвратом\n"
-        "/aactive ID — показать активную игру\n"
-        "/aactivelist — все активные игры\n"
-        "/acleargames — очистить все (без возврата)\n"
+        "<b>🎮 Активные игры</b>\n"
+        "/aendgame ID [lose]\n"
+        "/aendgameall · /aactive ID · /aactivelist · /acleargames\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>👤 Юзеры</b>\n"
-        "/auser ID — подробная инфо\n"
-        "/afind @username — поиск по нику\n"
-        "/awhois ID — быстрая справка\n"
-        "/agive ID SUM — начислить\n"
-        "/atake ID SUM — списать\n"
-        "/asetbal ID SUM — установить баланс\n"
-        "/aban ID [reason] — забанить\n"
-        "/aunban ID — разбанить\n"
-        "/abanlist — список забаненных\n"
-        "/apause ID — пауза (блокирует ставки)\n"
-        "/aunpause ID — снять паузу\n"
-        "/anote ID TXT — заметка о юзере\n"
-        "/anotes ID — показать заметки\n"
-        "/aresetnonce ID — сбросить nonce\n"
-        "/aresetserver ID — новый client_seed\n"
+        "/auser ID · /afind @username · /awhois ID\n"
+        "/agive · /atake · /asetbal\n"
+        "/aban · /aunban · /abanlist · /apause · /aunpause\n"
+        "/anote · /anotes · /aresetnonce · /aresetserver\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📊 Статистика</b>\n"
-        "/astats — глобальная\n"
-        "/aggr — GGR и реальный RTP\n"
-        "/abalances — сумма всех балансов\n"
-        "/aonline — юзеров за 5 мин\n"
-        "/arich — топ-15 по балансу\n"
-        "/adaily — за 24 часа\n"
-        "/aweekly — за 7 дней\n"
-        "/agames — детально по играм\n"
-        "/atop — топ профита за 30д\n"
-        "/atopdep — топ депозитов\n"
-        "/atopwd — топ выводов\n"
-        "/arp — RTP каждой игры\n"
+        "/astats · /aggr · /abalances · /aonline · /arich\n"
+        "/adaily · /aweekly · /agames · /atop · /atopdep · /atopwd · /arp\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>💸 Транзакции</b>\n"
-        "/atx ID — последние транзы юзера\n"
-        "/atxlast N — последние N в системе\n"
-        "/arefund TX_ID — вернуть транзакцию\n"
+        "/atx ID · /atxlast N · /arefund TX_ID\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🎟 Промо</b>\n"
-        "/anewpromo CODE SUM [MAX] — создать\n"
-        "/alistpromos — список\n"
-        "/adelpromo CODE — удалить\n"
-        "/adelallpromos — удалить все\n"
-        "/apromoinfo CODE — кто активировал\n"
+        "/anewpromo CODE SUM [MAX] · /alistpromos · /adelpromo CODE\n"
+        "/adelallpromos · /apromoinfo CODE\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>📢 Сообщения</b>\n"
-        "/abroadcast TXT — всем\n"
-        "/apush ID TXT — одному\n"
+        "/abroadcast TXT · /apush ID TXT\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>⚙️ Настройки</b>\n"
-        "/asettings — текущие значения\n"
-        "/asetrtp 0.96 — RTP (0.90-0.99)\n"
-        "/asetminbet V · /asetmaxbet V\n"
-        "/asetmindep V · /asetminwd V · /asetmaxwd V\n"
-        "/asetref 0.05 — реф-процент\n"
-        "/asetcooldown MIN — кулдаун выводов\n"
-        "/amaintenance on|off — блок ставок\n"
+        "/asettings · /asetrtp 0.96 · /asetminbet · /asetmaxbet\n"
+        "/asetmindep · /asetminwd · /asetmaxwd\n"
+        "/asetref 0.05 · /asetcooldown 15 · /amaintenance on|off\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "<b>🩺 Система</b>\n"
-        "/ahealth — статус сервисов\n"
-        "/alogs N — последние N логов\n"
-        "/aclearlogs N — очистить старые логи\n"
-        "/aadmins — список админов\n",
+        "/ahealth · /alogs N · /aclearlogs N · /aadmins",
         parse_mode="HTML")
 
 
@@ -564,39 +596,35 @@ async def cmd_admin(message: Message):
         f"Рефералка {REFERRAL_SHARE*100:.0f}%\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
         f"Игры вкл: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}\n"
+        f"Канал: {CHANNEL_ID or '— не задан —'}\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "Все команды: /ahelp",
         parse_mode="HTML")
 
 
-# ---- Управление играми ----
 @dp.message(Command("astatus"))
 async def cmd_astatus(message: Message):
     if not admin_only(message): return
-    lines = []
-    for k, v in GAMES_ENABLED.items():
-        lines.append(f"{'✅' if v else '⛔'} <code>{k}</code>")
+    lines = [f"{'✅' if v else '⛔'} <code>{k}</code>" for k, v in GAMES_ENABLED.items()]
     await message.answer("<b>🎮 Статус игр</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("aon"))
 async def cmd_aon(message: Message, command: CommandObject):
     if not admin_only(message): return
-    if not command.args:
-        return await message.answer(f"/aon <game>\nДоступно: {', '.join(GAMES_ENABLED.keys())}")
+    if not command.args: return await message.answer(f"/aon <game>\n{', '.join(GAMES_ENABLED.keys())}")
     g = command.args.strip().lower()
     if g not in GAMES_ENABLED: return await message.answer(f"❌ Нет игры {g}")
     GAMES_ENABLED[g] = True
-    await message.answer(f"✅ Игра <b>{g}</b> включена", parse_mode="HTML")
+    await message.answer(f"✅ <b>{g}</b> включена", parse_mode="HTML")
 
 @dp.message(Command("aoff"))
 async def cmd_aoff(message: Message, command: CommandObject):
     if not admin_only(message): return
-    if not command.args:
-        return await message.answer(f"/aoff <game>\nДоступно: {', '.join(GAMES_ENABLED.keys())}")
+    if not command.args: return await message.answer(f"/aoff <game>\n{', '.join(GAMES_ENABLED.keys())}")
     g = command.args.strip().lower()
     if g not in GAMES_ENABLED: return await message.answer(f"❌ Нет игры {g}")
     GAMES_ENABLED[g] = False
-    await message.answer(f"⛔ Игра <b>{g}</b> выключена", parse_mode="HTML")
+    await message.answer(f"⛔ <b>{g}</b> выключена", parse_mode="HTML")
 
 @dp.message(Command("aonall"))
 async def cmd_aonall(message: Message):
@@ -611,19 +639,16 @@ async def cmd_aoffall(message: Message):
     await message.answer("⛔ Все игры выключены")
 
 
-# ---- Активные игры юзеров ----
 @dp.message(Command("aendgame"))
 async def cmd_aendgame(message: Message, command: CommandObject):
     if not admin_only(message): return
-    if not command.args:
-        return await message.answer("/aendgame <id|@username> [lose]\nБез lose — ставка возвращается.")
+    if not command.args: return await message.answer("/aendgame <id|@username> [lose]")
     parts = command.args.split()
     p = await admin_get_user(message, parts[0])
     if not p: return await message.answer("Юзер не найден")
     mode = parts[1].lower() if len(parts) > 1 else "refund"
     ar = await get_active_round(p["id"])
-    if not ar:
-        return await message.answer(f"У <code>{p['telegram_id']}</code> нет активной игры", parse_mode="HTML")
+    if not ar: return await message.answer(f"Нет активной игры у <code>{p['telegram_id']}</code>", parse_mode="HTML")
     game = ar["game_type"]; bet = float(ar["bet_amount"])
     if mode != "lose":
         await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
@@ -635,7 +660,7 @@ async def cmd_aendgame(message: Message, command: CommandObject):
     await log_round(p["id"], game, bet, {"admin_end": True, "mode": mode},
                     0 if mode != "lose" else -bet, "", 0)
     await message.answer(
-        f"✅ Игра <b>{game}</b> завершена.\nРежим: {'возврат' if mode != 'lose' else 'без возврата'}\nСтавка: {bet:.2f}",
+        f"✅ <b>{game}</b> завершена. Режим: {'возврат' if mode != 'lose' else 'без возврата'}\nСтавка: {bet:.2f}",
         parse_mode="HTML")
 
 @dp.message(Command("aendgameall"))
@@ -655,7 +680,7 @@ async def cmd_aendgameall(message: Message):
             await sb(supabase.table("active_rounds").delete().eq("user_id", uid))
             total += bet; ok += 1
         except Exception as e: log.exception("aendgameall fail: %s", e)
-    await message.answer(f"✅ Завершено <b>{ok}</b> игр, возвращено <b>{total:.2f}</b>", parse_mode="HTML")
+    await message.answer(f"✅ Завершено <b>{ok}</b>, возвращено <b>{total:.2f}</b>", parse_mode="HTML")
 
 @dp.message(Command("aactive"))
 async def cmd_aactive(message: Message, command: CommandObject):
@@ -666,29 +691,26 @@ async def cmd_aactive(message: Message, command: CommandObject):
     ar = await get_active_round(p["id"])
     if not ar: return await message.answer("Нет активной игры")
     await message.answer(
-        f"<b>🎮 Активная игра</b>\nЮзер: <code>{p['telegram_id']}</code>\n"
-        f"Игра: <b>{ar['game_type']}</b>\nСтавка: {float(ar['bet_amount']):.2f}\n"
-        f"State: <code>{json.dumps(ar.get('state', {}))[:400]}</code>",
+        f"<b>🎮 {ar['game_type']}</b>\nЮзер: <code>{p['telegram_id']}</code>\n"
+        f"Ставка: {float(ar['bet_amount']):.2f}\nState: <code>{json.dumps(ar.get('state', {}))[:400]}</code>",
         parse_mode="HTML")
 
 @dp.message(Command("aactivelist"))
 async def cmd_aactivelist(message: Message):
     if not admin_only(message): return
-    r = await sb(supabase.table("active_rounds").select("*")
-                 .order("started_at", desc=True).limit(30))
+    r = await sb(supabase.table("active_rounds").select("*").order("started_at", desc=True).limit(30))
     if not r.data: return await message.answer("Активных игр нет")
     uids = list(set(x["user_id"] for x in r.data))
     prof = await sb(supabase.table("profiles").select("id, telegram_id, first_name").in_("id", uids))
     nm = {p["id"]: (p.get("first_name") or str(p.get("telegram_id"))) for p in prof.data or []}
-    lines = [f"• <b>{nm.get(x['user_id'], '?')}</b> · {x['game_type']} · {float(x['bet_amount']):.2f}"
-             for x in r.data]
+    lines = [f"• <b>{nm.get(x['user_id'], '?')}</b> · {x['game_type']} · {float(x['bet_amount']):.2f}" for x in r.data]
     await message.answer("<b>🎮 Активные:</b>\n" + "\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("acleargames"))
 async def cmd_acleargames(message: Message):
     if not admin_only(message): return
     await sb(supabase.table("active_rounds").delete().neq("user_id", "00000000-0000-0000-0000-000000000000"))
-    await message.answer("✅ Все активные игры удалены (без возврата)")
+    await message.answer("✅ Все активные игры удалены")
 
 
 # ---- Юзеры ----
@@ -1221,8 +1243,7 @@ async def cmd_asettings(message: Message):
         f"HOUSE_EDGE: {HOUSE_EDGE}\nRTP: {(1-HOUSE_EDGE)*100:.1f}%\n"
         f"REFERRAL_SHARE: {REFERRAL_SHARE}\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
-        f"Игр активно: {sum(1 for v in GAMES_ENABLED.values() if v)}/{len(GAMES_ENABLED)}",
-        parse_mode="HTML")
+        f"Канал: {CHANNEL_ID or '— не задан —'}", parse_mode="HTML")
 
 @dp.message(Command("asetminbet"))
 async def cmd_asetminbet(message: Message, command: CommandObject):
@@ -1334,6 +1355,7 @@ async def cmd_ahealth(message: Message):
         f"Crash: <b>{crash_state['status']}</b>\n"
         f"Активных игр: <b>{active_count}</b>\n"
         f"Игр вкл: <b>{enabled}/{len(GAMES_ENABLED)}</b>\n"
+        f"Канал: {CHANNEL_ID or '— не задан —'}\n"
         f"Maintenance: {'🚫 ON' if MAINTENANCE else '✅ OFF'}\n"
         f"Uptime: {int(time.time() - START_TIME)}s", parse_mode="HTML")
 
@@ -1376,6 +1398,8 @@ async def cmd_aadmins(message: Message):
 # =================== USER COMMANDS ===================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
+    if not await is_subscribed(message.from_user.id):
+        return await send_sub_prompt(message)
     await state.clear()
     p = await get_or_create_profile(message.from_user.model_dump())
     if command.args and command.args.startswith("ref_") and not p.get("referrer_id"):
@@ -1388,11 +1412,71 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
                 try: await bot.send_message(ref_tg, f"👥 Новый реферал: <b>{message.from_user.first_name}</b>", parse_mode="HTML")
                 except: pass
     p = await get_or_create_profile(message.from_user.model_dump())
-    extra = "\n\n🔐 <i>У тебя есть /admin</i>" if is_admin(message.from_user.id) else ""
+    extra = "\n\n🔐 <i>У тебя доступ к /admin</i>" if is_admin(message.from_user.id) else ""
     cur = p.get("preferred_currency") or "USDT"
     await message.answer(
-        f"Привет, {message.from_user.first_name}! 👋\n\n💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>{extra}",
+        f"👋 <b>Добро пожаловать в GoldCash!</b>\n\n"
+        f"💎 Твой баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n"
+        f"<b>Что можно делать:</b>\n"
+        f"🎲 Играть в кубы прямо в чате\n"
+        f"🌐 Открыть Mini App — там Mines, Roulette, Dice, Plinko, Blackjack, Tower\n"
+        f"💰 Пополнять и выводить через @xRocket\n"
+        f"👥 Приглашать друзей и получать {REFERRAL_SHARE*100:.0f}% с их проигрыша\n\n"
+        f"Команды: /help{extra}",
         reply_markup=main_menu(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "check_sub")
+async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
+    if not await is_subscribed(cb.from_user.id):
+        return await cb.answer("❌ Ты ещё не подписан на канал", show_alert=True)
+    await cb.answer("✅ Подписка подтверждена", show_alert=False)
+    try:
+        await cb.message.delete()
+    except: pass
+    await state.clear()
+    p = await get_or_create_profile(cb.from_user.model_dump())
+    cur = p.get("preferred_currency") or "USDT"
+    await cb.message.answer(
+        f"👋 <b>Добро пожаловать в GoldCash!</b>\n\n"
+        f"💎 Твой баланс: <b>{float(p['balance']):.2f} {cur}</b>\n\n"
+        f"<b>Что можно делать:</b>\n"
+        f"🎲 Играть в кубы прямо в чате\n"
+        f"🌐 Открыть Mini App — там Mines, Roulette, Dice, Plinko, Blackjack, Tower\n"
+        f"💰 Пополнять и выводить через @xRocket\n"
+        f"👥 Приглашать друзей и получать {REFERRAL_SHARE*100:.0f}% с их проигрыша\n\n"
+        f"Команды: /help",
+        reply_markup=main_menu(), parse_mode="HTML")
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(
+        "📖 <b>GoldCash — справка</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>🎮 Как играть</b>\n"
+        "• <b>Кубы</b> — /dice, выбери ставку и число 1–6. Если выпадет твоё — ×5.76.\n"
+        "• <b>Mini App</b> — жми «🌐 Открыть казино». Там Mines, Roulette, Dice, Plinko, Blackjack, Tower.\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>💰 Депозит и вывод</b>\n"
+        "• <b>Пополнить</b> — выбери сумму, откроется xRocket, оплати.\n"
+        "• <b>Вывести</b> — деньги придут на твой аккаунт @xRocket мгновенно.\n"
+        "• ⚠ После депозита вывод доступен через 15 минут (антифрод).\n"
+        "• Лимит вывода: 500 ₮ / сутки.\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>👥 Друзья</b>\n"
+        f"Получай <b>{REFERRAL_SHARE*100:.0f}%</b> от проигрыша каждого приглашённого друга.\n"
+        "Своя ссылка — /start → кнопка «Друзья».\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>📊 Прочее</b>\n"
+        "/balance — баланс\n"
+        "/stats — личная статистика\n"
+        "/currency — валюта (USDT/TON/BTC/ETH/TRX)\n"
+        "/promo КОД — активировать промокод\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<i>RTP 96% · Provably Fair · Telegram Mini App</i>",
+        parse_mode="HTML", reply_markup=back_kb())
+
 
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
@@ -1471,6 +1555,27 @@ def withdraw_kb(balance):
 async def cb_menu(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("🏠 Главное меню:", reply_markup=main_menu())
+
+@dp.callback_query(F.data == "menu:help")
+async def cb_help(cb: CallbackQuery):
+    await cb.message.edit_text(
+        "📖 <b>GoldCash — справка</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>🎮 Игры</b>\n"
+        "• /dice — кубы прямо в чате\n"
+        "• Mini App — Mines, Roulette, Dice, Plinko, Blackjack, Tower\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>💰 Платежи</b>\n"
+        "• Пополнение и вывод через @xRocket\n"
+        "• Вывод после депозита — через 15 мин\n"
+        "• Лимит: 500 ₮ / сутки\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>👥 Рефералка</b>\n{REFERRAL_SHARE*100:.0f}% от проигрыша приглашённых друзей\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "<b>Команды</b>\n"
+        "/balance · /stats · /currency · /promo\n\n"
+        "<i>RTP 96% · Provably Fair</i>",
+        parse_mode="HTML", reply_markup=back_kb())
 
 @dp.callback_query(F.data == "menu:stats")
 async def cb_stats(cb: CallbackQuery):
@@ -1580,7 +1685,6 @@ def dice_bet_kb():
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
 def dice_num_kb(bet):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=str(n), callback_data=f"dnum:{n}:{bet}") for n in (1,2,3)],
@@ -1653,12 +1757,18 @@ async def cb_ref_menu(cb: CallbackQuery):
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 
+# =================== middleware register ===================
+dp.message.middleware(SubscriptionMiddleware())
+dp.callback_query.middleware(SubscriptionMiddleware())
+
+
 # =================== FastAPI ===================
 @asynccontextmanager
 async def lifespan(app):
     global BOT_USERNAME
     me = await bot.get_me(); BOT_USERNAME = me.username
-    log.info("start · house_edge=%.3f · admins=%s · bot=@%s", HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME)
+    log.info("start · house_edge=%.3f · admins=%s · bot=@%s · channel=%s",
+             HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—")
     task_bot = asyncio.create_task(dp.start_polling(bot))
     task_crash = asyncio.create_task(crash_loop())
     yield
@@ -1686,6 +1796,7 @@ async def config():
         "referral_share": REFERRAL_SHARE, "currencies": SUPPORTED_CURRENCIES,
         "maintenance": MAINTENANCE,
         "games_enabled": GAMES_ENABLED,
+        "channel_url": CHANNEL_URL,
         "rtp": round(1 - HOUSE_EDGE, 4),
         "payouts": {"dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
                     "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
