@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi import FastAPI, Header, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
@@ -72,6 +72,49 @@ def ensure_game_enabled(game: str):
     if not GAMES_ENABLED.get(game, True):
         raise HTTPException(503, f"игра {game} временно отключена")
 
+# ================== Rakeback claim ==================
+RAKEBACK_CLAIM_COOLDOWN_MIN = 10  # раз в 10 минут
+RAKEBACK_MIN_CLAIM = 0.01         # минимум для claim
+
+# ================== XP / Levels ==================
+MAX_LEVEL = 50
+LEVEL_REWARDS = {
+    5: 0.5, 10: 1.0, 15: 2.0, 20: 5.0, 25: 10.0,
+    30: 20.0, 40: 50.0, 50: 150.0,
+}
+
+def xp_for_level(level: int) -> float:
+    """Всего XP, нужно для достижения уровня level (level>=1)."""
+    if level <= 1: return 0
+    return round(30 * (level - 1) * level, 2)
+
+def level_from_xp(xp: float) -> int:
+    xp = float(xp or 0)
+    level = 1
+    while level < MAX_LEVEL and xp >= xp_for_level(level + 1):
+        level += 1
+    return level
+
+def xp_info(p: dict) -> dict:
+    xp = float(p.get("xp") or 0)
+    level = int(p.get("level") or level_from_xp(xp))
+    cur = xp_for_level(level)
+    nxt = xp_for_level(level + 1) if level < MAX_LEVEL else cur
+    progress = 0.0
+    if nxt > cur:
+        progress = (xp - cur) / (nxt - cur)
+    return {
+        "level": level,
+        "xp": round(xp, 2),
+        "max_level": MAX_LEVEL,
+        "xp_current": round(cur, 2),
+        "xp_next": round(nxt, 2),
+        "xp_to_next": round(max(0.0, nxt - xp), 2),
+        "progress": round(max(0.0, min(1.0, progress)) * 100, 1),
+        "next_reward_level": next((l for l in sorted(LEVEL_REWARDS) if l > level), None),
+        "next_reward_amount": next((LEVEL_REWARDS[l] for l in sorted(LEVEL_REWARDS) if l > level), None),
+    }
+
 # ================== VIP TIERS ==================
 VIP_TIERS = [
     {"id": "bronze",   "name": "🥉 Бронза",  "wagered": 0,     "rakeback": 0.010, "max_bet_mult": 1.0},
@@ -92,15 +135,37 @@ def vip_info(p: dict) -> dict:
     cur = compute_vip_tier(wagered)
     nxt = None
     for t in VIP_TIERS:
-        if t["wagered"] > wagered: nxt = t; break
+        if t["wagered"] > wagered:
+            nxt = t; break
+
+    # кулдаун рейкбека
+    can_claim = True
+    next_claim_in = 0
+    last = p.get("last_rakeback_at")
+    if last:
+        try:
+            dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            left = RAKEBACK_CLAIM_COOLDOWN_MIN * 60 - (datetime.now(timezone.utc) - dt).total_seconds()
+            if left > 0:
+                can_claim = False
+                next_claim_in = int(left)
+        except Exception:
+            pass
+
     return {
         "tier": cur["id"], "tier_name": cur["name"],
         "rakeback": cur["rakeback"], "max_bet_mult": cur["max_bet_mult"],
         "total_wagered": round(wagered, 2),
         "rakeback_earned": round(float(p.get("rakeback_earned") or 0), 2),
+        "rakeback_pending": round(float(p.get("rakeback_pending") or 0), 8),
+        "rakeback_can_claim": can_claim,
+        "rakeback_next_in": next_claim_in,
+        "rakeback_cooldown_min": RAKEBACK_CLAIM_COOLDOWN_MIN,
+        "rakeback_min": RAKEBACK_MIN_CLAIM,
         "next_tier": nxt["id"] if nxt else None,
         "next_tier_name": nxt["name"] if nxt else None,
         "next_tier_at": nxt["wagered"] if nxt else 0,
+        "next_required": nxt["wagered"] if nxt else 0,   # фикс "МАКС"
     }
 
 async def update_vip_tier(uid):
@@ -119,10 +184,59 @@ async def add_wager(uid, amount):
     try:
         amount = float(amount)
         if amount <= 0: return
-        r = await sb(supabase.table("profiles").select("total_wagered").eq("id", uid))
+
+        r = await sb(supabase.table("profiles").select(
+            "total_wagered, rakeback_pending, xp, level").eq("id", uid))
         if not r.data: return
-        new = round(float(r.data[0].get("total_wagered") or 0) + amount, 8)
-        await sb(supabase.table("profiles").update({"total_wagered": new}).eq("id", uid))
+        row = r.data[0]
+
+        new_wagered = round(float(row.get("total_wagered") or 0) + amount, 8)
+
+        # рейкбек — накопительно
+        tier = compute_vip_tier(new_wagered)
+        pct = tier["rakeback"]
+        rakeback_add = round(amount * pct, 8)
+        new_rakeback = round(float(row.get("rakeback_pending") or 0) + rakeback_add, 8)
+
+        # XP
+        old_xp = float(row.get("xp") or 0)
+        new_xp = round(old_xp + amount, 2)
+        old_level = int(row.get("level") or level_from_xp(old_xp))
+        new_level = level_from_xp(new_xp)
+
+        upd = {
+            "total_wagered": new_wagered,
+            "rakeback_pending": new_rakeback,
+            "xp": new_xp,
+        }
+        if new_level > old_level:
+            upd["level"] = new_level
+
+        await sb(supabase.table("profiles").update(upd).eq("id", uid))
+
+        # награды за достижение уровня
+        if new_level > old_level:
+            for lvl in range(old_level + 1, new_level + 1):
+                if lvl in LEVEL_REWARDS:
+                    reward = float(LEVEL_REWARDS[lvl])
+                    await sb_rpc("change_balance", {"p_user_id": uid, "p_delta": reward})
+                    await sb(supabase.table("transactions").insert({
+                        "user_id": uid, "type": "bonus", "amount": reward,
+                        "currency": "USDT", "status": "completed",
+                        "meta": {"source": "level_up", "level": lvl}}))
+                    try:
+                        prof = (await sb(supabase.table("profiles")
+                                         .select("telegram_id").eq("id", uid))).data
+                        if prof:
+                            await bot.send_message(
+                                prof[0]["telegram_id"],
+                                f"🎉 <b>Уровень {lvl}!</b>\n\n"
+                                f"Награда: <b>+{reward:.2f} ₮</b>\n"
+                                f"Играй дальше — следующий уровень принесёт ещё больше!",
+                                parse_mode="HTML")
+                    except Exception:
+                        pass
+
         asyncio.create_task(update_vip_tier(uid))
     except Exception:
         log.exception("add_wager failed")
@@ -538,6 +652,12 @@ async def check_pending_deposits(user_id: str):
                 continue
             status = (data.get("status") or "").lower()
             if status in ("paid", "completed", "success"):
+                # ✅ Атомарный захват: сначала помечаем processing, только потом начисляем
+                claim = await sb(supabase.table("transactions")
+                                 .update({"status": "processing"})
+                                 .eq("id", tx["id"]).eq("status", "pending"))
+                if not claim.data:
+                    continue  # webhook уже забрал
                 await sb_rpc("change_balance",
                              {"p_user_id": tx["user_id"], "p_delta": float(tx["amount"])})
                 await sb(supabase.table("transactions").update({
@@ -727,13 +847,14 @@ async def log_round(uid, game, bet, result, profit, ss, nonce):
 
 async def get_user_stats(uid):
     tx = (await sb(supabase.table("transactions").select("type, amount, status").eq("user_id", uid))).data or []
-    rounds = (await sb(supabase.table("game_rounds").select("id").eq("user_id", uid))).data or []
+    rounds = (await sb(supabase.table("game_rounds").select("bet_amount, profit").eq("user_id", uid))).data or []
     dep = sum(float(t["amount"]) for t in tx if t["type"] == "deposit" and t["status"] == "completed")
     wd = sum(float(t["amount"]) for t in tx if t["type"] == "withdraw" and t["status"] == "completed")
-    wins = sum(float(t["amount"]) for t in tx if t["type"] == "win")
-    bets = sum(float(t["amount"]) for t in tx if t["type"] == "bet")
+    bets = sum(float(r["bet_amount"]) for r in rounds)
+    profits = sum(float(r["profit"]) for r in rounds)
+    wins = sum((float(r["profit"]) + float(r["bet_amount"])) for r in rounds if float(r["profit"]) > 0)
     return {"games": len(rounds), "deposits": round(dep, 2), "withdrawals": round(wd, 2),
-            "bets": round(bets, 2), "wins": round(wins, 2), "net": round(wins - bets, 2)}
+            "bets": round(bets, 2), "wins": round(wins, 2), "net": round(profits, 2)}
 
 async def credit_referrer_on_loss(uid, bet_amount):
     try:
@@ -838,8 +959,9 @@ async def create_deposit_invoice(profile, amount, currency="USDT"):
 
 async def daily_withdrawn(uid):
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    r = await sb(supabase.table("transactions").select("amount")
-                 .eq("user_id", uid).eq("type", "withdraw").eq("status", "completed")
+    r = await sb(supabase.table("transactions").select("amount, status")
+                 .eq("user_id", uid).eq("type", "withdraw")
+                 .in_("status", ["completed", "pending", "processing"])
                  .gte("created_at", since))
     return sum(float(x["amount"]) for x in r.data or [])
 
@@ -1168,6 +1290,12 @@ async def cmd_acheckpending(message: Message):
             continue
         status = (data.get("status") or "").lower()
         if status in ("paid", "completed", "success"):
+            claim = await sb(supabase.table("transactions")
+                             .update({"status": "processing"})
+                             .eq("id", tx["id"]).eq("status", "pending"))
+            if not claim.data:
+                failed += 1
+                continue
             await sb_rpc("change_balance",
                          {"p_user_id": tx["user_id"], "p_delta": float(tx["amount"])})
             await sb(supabase.table("transactions").update({
@@ -2481,6 +2609,15 @@ async def lifespan(app):
     me = await bot.get_me(); BOT_USERNAME = me.username
     log.info("start · HE=%.3f · admins=%s · bot=@%s · channel=%s · antifraud=%s",
              HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—", ANTIFRAUD_ENABLED)
+    # Чистим "зависшие" crash-раунды (например, после рестарта)
+    try:
+        await sb(supabase.table("crash_rounds").update({"status": "crashed"})
+                 .in_("status", ["running", "betting"]))
+        await sb(supabase.table("crash_bets").update({"status": "lost"})
+                 .eq("status", "active"))
+        log.info("cleanup crash rounds done")
+    except Exception:
+        log.exception("cleanup crash rounds failed")
     task_bot = asyncio.create_task(dp.start_polling(bot))
     task_crash = asyncio.create_task(crash_loop())
     yield
@@ -2516,6 +2653,10 @@ async def config():
         "dice_predictions": DICE_PREDICTIONS,
         "scratch_tiers": [{"id":t["id"],"name":t["name"],"bet":t["bet"],
                            "color":t["color"],"max":t["max"]} for t in SCRATCH_TIERS],
+        "rakeback_cooldown_min": RAKEBACK_CLAIM_COOLDOWN_MIN,
+        "rakeback_min": RAKEBACK_MIN_CLAIM,
+        "max_level": MAX_LEVEL,
+        "level_rewards": LEVEL_REWARDS,
     }
 
 def _profile_sync(user):
@@ -2526,12 +2667,13 @@ def _profile_sync(user):
         "first_name": user.get("first_name"), "preferred_currency": "USDT"}).execute().data[0]
     try:
         tx = supabase.table("transactions").select("type, amount, status").eq("user_id", p["id"]).execute().data or []
-        rounds = supabase.table("game_rounds").select("id").eq("user_id", p["id"]).execute().data or []
+        rounds = supabase.table("game_rounds").select("bet_amount, profit").eq("user_id", p["id"]).execute().data or []
     except Exception: tx, rounds = [], []
     dep = sum(float(t["amount"]) for t in tx if t["type"] == "deposit" and t["status"] == "completed")
     wd = sum(float(t["amount"]) for t in tx if t["type"] == "withdraw" and t["status"] == "completed")
-    wins = sum(float(t["amount"]) for t in tx if t["type"] == "win")
-    bets = sum(float(t["amount"]) for t in tx if t["type"] == "bet")
+    bets = sum(float(rr["bet_amount"]) for rr in rounds)
+    profits = sum(float(rr["profit"]) for rr in rounds)
+    wins = sum((float(rr["profit"]) + float(rr["bet_amount"])) for rr in rounds if float(rr["profit"]) > 0)
     return {"id": p["id"], "telegram_id": p["telegram_id"], "username": p.get("username"),
             "first_name": p.get("first_name"), "balance": float(p["balance"]),
             "client_seed": p.get("client_seed") or "", "nonce": int(p.get("nonce") or 0),
@@ -2541,8 +2683,9 @@ def _profile_sync(user):
             "is_admin": is_admin(tg_id),
             "bonus": _bonus_info(p),
             "vip": vip_info(p),
+            "level_info": xp_info(p),
             "stats": {"total_games": len(rounds), "total_wagered": round(bets, 2),
-                      "total_profit": round(wins - bets, 2),
+                      "total_profit": round(profits, 2),
                       "deposits": round(dep, 2), "withdrawals": round(wd, 2), "wins": round(wins, 2)}}
 
 @app.get("/api/profile")
@@ -2555,6 +2698,41 @@ async def profile(user: dict = Depends(get_current_user)):
 async def api_vip(user: dict = Depends(get_current_user)):
     p = await get_or_create_profile(user)
     return vip_info(p)
+
+@app.post("/api/vip/claim")
+async def vip_claim(user: dict = Depends(get_current_user)):
+    p = await get_or_create_profile(user)
+    pending = float(p.get("rakeback_pending") or 0)
+    if pending < RAKEBACK_MIN_CLAIM:
+        raise HTTPException(400, f"минимум для вывода {RAKEBACK_MIN_CLAIM} ₮")
+
+    # кулдаун 10 минут
+    last = p.get("last_rakeback_at")
+    if last:
+        try:
+            dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            left = RAKEBACK_CLAIM_COOLDOWN_MIN * 60 - (datetime.now(timezone.utc) - dt).total_seconds()
+            if left > 0:
+                m, s = divmod(int(left), 60)
+                raise HTTPException(400, f"забрать можно раз в {RAKEBACK_CLAIM_COOLDOWN_MIN} мин. Подожди {m}м {s}с")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": pending})
+    earned = float(p.get("rakeback_earned") or 0) + pending
+    await sb(supabase.table("profiles").update({
+        "rakeback_pending": 0,
+        "rakeback_earned": round(earned, 8),
+        "last_rakeback_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", p["id"]))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bonus", "amount": pending,
+        "currency": "USDT", "status": "completed",
+        "meta": {"source": "rakeback_claim"}}))
+
+    return {"ok": True, "amount": round(pending, 8)}
 
 def _require_admin(user: dict):
     if not is_admin(int(user["id"])):
@@ -2715,6 +2893,9 @@ async def bonus_claim(user: dict = Depends(get_current_user)):
     await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": DAILY_BONUS})
     await sb(supabase.table("profiles").update(
         {"last_bonus_at": datetime.now(timezone.utc).isoformat()}).eq("id", p["id"]))
+    await sb(supabase.table("transactions").insert({
+        "user_id": p["id"], "type": "bonus", "amount": DAILY_BONUS,
+        "currency": "USDT", "status": "completed", "meta": {"source": "daily"}}))
     return {"ok": True, "amount": DAILY_BONUS}
 
 @app.get("/api/history/games")
@@ -2807,8 +2988,6 @@ async def xrocket_webhook(request: Request):
     event = json.loads(raw)
     log.info("✅ xRocket webhook verified")
 
-    # ============ РАЗБОР ВЛОЖЕННОЙ СТРУКТУРЫ ============
-    # xRocket шлёт: {"data": {"event": "...", "invoice": {...}, "payment": {...}}, "type": "invoice"}
     data_block = event.get("data") or {}
     outer_type = event.get("type")
     inner_event = data_block.get("event") or ""
@@ -2842,6 +3021,13 @@ async def xrocket_webhook(request: Request):
 
             if tx:
                 row = tx[0]
+                # ✅ Атомарный захват
+                claim = await sb(supabase.table("transactions")
+                                 .update({"status": "processing"})
+                                 .eq("id", row["id"]).eq("status", "pending"))
+                if not claim.data:
+                    log.info("already claimed by another worker: %s", row["id"])
+                    return {"ok": True}
                 await sb_rpc("change_balance",
                              {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
                 await sb(supabase.table("transactions").update({
@@ -2979,6 +3165,61 @@ async def crash_cashout(user: dict = Depends(get_current_user)):
         "currency": "USDT", "status": "completed", "meta": {"game": "crash"}}))
     await log_round(p["id"], "crash", amount, {"mult": mult, "round": rid}, profit, "", 0)
     return {"ok": True, "mult": mult, "payout": payout, "profit": profit}
+
+# ================== CRASH WEBSOCKET ==================
+@app.websocket("/ws/crash")
+async def ws_crash(websocket: WebSocket):
+    await websocket.accept()
+    log.info("ws_crash connected: %s", websocket.client)
+    try:
+        last_state_key = None
+        while True:
+            status = crash_state["status"]
+            rid = crash_state["round_id"]
+            key = (status, rid)
+            server_time = time.time()
+
+            if key != last_state_key:
+                # Полное состояние при смене раунда/статуса
+                try:
+                    recent = await asyncio.to_thread(lambda: supabase.table("crash_rounds")
+                        .select("crash_point").eq("status", "crashed")
+                        .order("created_at", desc=True).limit(10).execute())
+                    recent_list = [{"crash_point": float(x["crash_point"])}
+                                   for x in (recent.data or [])]
+                except Exception:
+                    recent_list = []
+
+                await websocket.send_json({
+                    "type": "state",
+                    "status": status,
+                    "round_id": rid,
+                    "started_at": crash_state["started_at"],
+                    "betting_ends_at": crash_state.get("betting_ends_at"),
+                    "crash_point": crash_state["crash_point"] if status == "crashed" else None,
+                    "server_seed": crash_state["server_seed"] if status == "crashed" else None,
+                    "server_time": server_time,
+                    "recent": recent_list,
+                })
+                last_state_key = key
+            else:
+                # Регулярный тик — синхронизация времени
+                await websocket.send_json({
+                    "type": "tick",
+                    "status": status,
+                    "server_time": server_time,
+                })
+
+            await asyncio.sleep(0.15)
+    except WebSocketDisconnect:
+        log.info("ws_crash disconnected")
+    except Exception:
+        log.exception("ws_crash error")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 # ================== DICE ==================
 @app.post("/api/games/dice/bet")
