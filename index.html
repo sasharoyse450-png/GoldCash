@@ -706,6 +706,7 @@ let cfg = {
 };
 let currentGame = null;
 let crashPoll = null, crashLocalAnim = null, crashAnimRoundId = null;
+let crashWs = null, crashServerOffset = 0, crashStateCache = null;
 let _displayedBalance = 0;
 let _lastBonusSig = "";
 let _lastVipSig = "";
@@ -777,7 +778,10 @@ function closeModal(id){
   if (id === "modal-game") {
     if (crashPoll) { clearInterval(crashPoll); crashPoll = null; }
     if (crashLocalAnim) { cancelAnimationFrame(crashLocalAnim); crashLocalAnim = null; }
+    if (crashWs) { try { crashWs.close(); } catch {} crashWs = null; }
     crashAnimRoundId = null;
+    crashServerOffset = 0;
+    crashStateCache = null;
   }
 }
 document.querySelectorAll(".close-modal").forEach(b => b.addEventListener("click", e => {
@@ -1120,6 +1124,27 @@ async function openProfile() {
     const g = (k) => num(s[k]);
     const bonus = p.bonus || {};
     const vip = p.vip || {};
+    const levelInfo = p.level_info || {};
+
+    const levelHtml = `
+      <div class="row-item flex-col items-stretch gap-2">
+        <div class="flex justify-between items-center">
+          <div class="text-sm font-black" style="color:var(--accent);">
+            ⭐ УРОВЕНЬ ${levelInfo.level || 1} / ${levelInfo.max_level || 50}
+          </div>
+          <div class="text-xs" style="color:var(--muted);">${(levelInfo.xp || 0).toFixed(0)} XP</div>
+        </div>
+        <div style="height:8px; background:var(--surface-2); border-radius:4px; overflow:hidden;">
+          <div style="height:100%; width:${levelInfo.progress || 0}%;
+                      background:linear-gradient(90deg,#fbbf24,#f59e0b); transition:width .3s;"></div>
+        </div>
+        <div class="flex justify-between text-[10px]" style="color:var(--muted);">
+          <span>До ур. ${(levelInfo.level || 1) + 1}: <b>${(levelInfo.xp_to_next || 0).toFixed(0)} XP</b></span>
+          ${levelInfo.next_reward_amount
+            ? `<span>Награда на ${levelInfo.next_reward_level} ур.: <b style="color:var(--green);">+${levelInfo.next_reward_amount} ₮</b></span>`
+            : `<span style="color:var(--accent);">МАКС</span>`}
+        </div>
+      </div>`;
 
     const bonusHtml = (bonus.bonus_active) ? `
       <div class="row-item flex-col items-stretch gap-2"
@@ -1149,6 +1174,15 @@ async function openProfile() {
 
     const vipPct = vip.next_required ? Math.min(100, (vip.total_wagered / vip.next_required) * 100) : 100;
     const vipColor = VIP_COLORS[vip.tier] || "var(--muted)";
+    const pendingRk = num(vip.rakeback_pending);
+    const canClaim = !!vip.rakeback_can_claim;
+    const rkDisabled = (!canClaim || pendingRk < 0.01);
+    const rkLabel = pendingRk < 0.01
+      ? 'Нечего забирать'
+      : canClaim
+        ? `💰 Забрать ${pendingRk.toFixed(4)} ₮`
+        : `⏳ ${Math.ceil((vip.rakeback_next_in || 0) / 60)} мин`;
+
     const vipHtml = `
       <div class="row-item flex-col items-stretch gap-2">
         <div class="flex justify-between items-center">
@@ -1163,6 +1197,15 @@ async function openProfile() {
           <div style="height:100%; width:${vipPct}%; background:${vipColor}; transition:width .3s;"></div>
         </div>
         <div class="text-[10px]" style="color:var(--muted);">Рейкбек заработано: ${vip.rakeback_earned.toFixed(2)} ₮</div>
+        <div class="text-[10px]" style="color:var(--muted);">
+          Накоплено: <b style="color:var(--accent);">${pendingRk.toFixed(4)} ₮</b>
+        </div>
+        <button id="rakeback-claim" class="submit"
+                style="padding:10px; font-size:13px; margin-top:6px;
+                       ${rkDisabled ? 'opacity:.5; cursor:not-allowed;' : ''}"
+                ${rkDisabled ? 'disabled' : ''}>
+          ${rkLabel}
+        </button>
       </div>`;
 
     body.innerHTML = `
@@ -1179,6 +1222,7 @@ async function openProfile() {
         <div class="mt-2 text-2xl font-black" style="color:var(--accent); letter-spacing:-.03em;">${num(p.balance).toFixed(2)} ${p.preferred_currency || "USDT"}</div>
       </div>
       ${bonusHtml}
+      ${levelHtml}
       ${vipHtml}
       <div class="grid grid-cols-2 gap-2">
         <div class="row-item flex-col items-start"><div class="row-sub">ДЕПОЗИТЫ</div><div class="row-amt" style="color:var(--green)">${g("deposits").toFixed(2)}</div></div>
@@ -1204,6 +1248,14 @@ async function openProfile() {
     document.getElementById("p-deposit").onclick = () => { closeModal("modal-profile"); setTimeout(()=>openModal("modal-deposit"), 200); };
     document.getElementById("p-history").onclick = () => { closeModal("modal-profile"); setTimeout(()=>{openModal("modal-history"); loadHistory("games");}, 200); };
     document.getElementById("p-fair").onclick = () => { closeModal("modal-profile"); setTimeout(()=>{openModal("modal-fair"); loadFairness();}, 200); };
+    document.getElementById("rakeback-claim")?.addEventListener("click", async () => {
+      try {
+        const r = await api("/api/vip/claim", { method:"POST" });
+        toast(`+${num(r.amount).toFixed(4)} ₮ 💰`);
+        updateBalance(num(profile.balance) + num(r.amount));
+        openProfile();
+      } catch (e) { toast(e.message, 3500); }
+    });
   } catch (e) { body.innerHTML = `<div class="text-red-400 p-4 text-xs">${e.message}</div>`; }
 }
 
@@ -1496,9 +1548,61 @@ function renderCrash() {
   const betEl = () => body.querySelector("#crash-bet");
   wireBet(body, betEl);
   crashAnimRoundId = null;
+
+  // закрываем старый WS/интервал если были
+  if (crashPoll) { clearInterval(crashPoll); crashPoll = null; }
+  if (crashWs) { try { crashWs.close(); } catch {} crashWs = null; }
+  if (crashLocalAnim) { cancelAnimationFrame(crashLocalAnim); crashLocalAnim = null; }
+
   refreshCrashState();
-  if (crashPoll) clearInterval(crashPoll);
-  crashPoll = setInterval(refreshCrashState, 700);
+  // резервный поллинг ставок/баланса — редко, раз в 3 сек
+  crashPoll = setInterval(refreshCrashState, 3000);
+
+  // WebSocket подключение для плавной анимации множителя
+  const wsProto = API_URL.startsWith("https") ? "wss:" : "ws:";
+  const wsUrl = API_URL.replace(/^https?:/, wsProto) + "/ws/crash";
+
+  function connectWs() {
+    try {
+      const ws = new WebSocket(wsUrl);
+      crashWs = ws;
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "state") {
+            crashStateCache = msg;
+            crashServerOffset = msg.server_time - Date.now() / 1000;
+            onCrashState(msg);
+          } else if (msg.type === "tick") {
+            crashServerOffset = msg.server_time - Date.now() / 1000;
+          }
+        } catch (err) {}
+      };
+      ws.onclose = () => {
+        if (currentGame === "crash") setTimeout(connectWs, 1500);
+      };
+      ws.onerror = () => { try { ws.close(); } catch {} };
+    } catch (e) {
+      setTimeout(connectWs, 1500);
+    }
+  }
+  connectWs();
+
+  // локальная анимация множителя
+  function animate() {
+    if (currentGame !== "crash") return;
+    const st = crashStateCache;
+    if (st && st.status === "running" && st.started_at) {
+      const now = Date.now() / 1000 + crashServerOffset;
+      const elapsed = now - st.started_at;
+      const m = Math.max(1, Math.pow(1.07, elapsed)).toFixed(2);
+      const multEl = body.querySelector("#crash-mult");
+      if (multEl) multEl.innerText = `${m}x`;
+    }
+    crashLocalAnim = requestAnimationFrame(animate);
+  }
+  animate();
+
   body.querySelector("#crash-bet-btn").onclick = async () => {
     const bet = Number(betEl().value);
     if (!validateBet(bet)) return;
@@ -1526,6 +1630,50 @@ function renderCrash() {
     } catch (e) { toast(e.message); }
   };
 }
+
+function onCrashState(msg) {
+  const body = document.getElementById("game-body");
+  if (!body) return;
+  const multEl = body.querySelector("#crash-mult");
+  const statusEl = body.querySelector("#crash-status");
+  const timerEl = body.querySelector("#crash-timer");
+  const betBox = body.querySelector("#crash-betbox-inner");
+  const cashBtn = body.querySelector("#crash-cashout-btn");
+  const hist = body.querySelector("#crash-history");
+
+  if (hist && msg.recent) {
+    const pills = msg.recent.map(r => {
+      const cp = num(r.crash_point);
+      let color;
+      if (cp < 2) color = "color:#ef4444; background:rgba(239,68,68,.1);";
+      else if (cp < 5) color = "color:#fbbf24; background:rgba(251,191,36,.1);";
+      else color = "color:#10b981; background:rgba(16,185,129,.1);";
+      return `<span class="shrink-0 rounded-md px-2 py-1 text-xs font-black" style="${color}">${cp.toFixed(2)}x</span>`;
+    }).join("");
+    hist.innerHTML = pills || `<span class="text-xs" style="color:var(--muted);">Нет раундов</span>`;
+  }
+
+  if (msg.status === "running") {
+    statusEl.innerHTML = `<span style="color:var(--green); font-weight:700;">● Раунд идёт</span>`;
+    timerEl.innerText = "";
+  } else if (msg.status === "betting") {
+    if (multEl) multEl.innerText = "1.00x";
+    statusEl.innerHTML = `<span style="color:var(--accent); font-weight:700;">● Приём ставок</span>`;
+    const ends = msg.betting_ends_at;
+    if (ends) {
+      const now = Date.now() / 1000 + crashServerOffset;
+      timerEl.innerText = `${Math.max(0, Math.ceil(ends - now))} сек`;
+    }
+  } else if (msg.status === "crashed") {
+    if (multEl) multEl.innerText = `${num(msg.crash_point).toFixed(2)}x`;
+    statusEl.innerHTML = `<span style="color:var(--red); font-weight:700;">💥 Краш</span>`;
+    timerEl.innerText = "";
+  } else {
+    if (multEl) multEl.innerText = "1.00x";
+    statusEl.innerText = "Ожидание…";
+  }
+}
+
 async function refreshCrashState() {
   try {
     const st = await api("/api/crash/state");
@@ -1533,7 +1681,7 @@ async function refreshCrashState() {
     const body = document.getElementById("game-body");
     if (!body) return;
     const hist = body.querySelector("#crash-history");
-    if (hist) {
+    if (hist && !crashStateCache) {
       const pills = (st.recent || []).map(r => {
         const cp = num(r.crash_point);
         let color;
@@ -1544,44 +1692,10 @@ async function refreshCrashState() {
       }).join("");
       hist.innerHTML = pills || `<span class="text-xs" style="color:var(--muted);">Нет раундов</span>`;
     }
-    const multEl = body.querySelector("#crash-mult");
-    const statusEl = body.querySelector("#crash-status");
-    const timerEl = body.querySelector("#crash-timer");
+
     const betBox = body.querySelector("#crash-betbox-inner");
     const cashBtn = body.querySelector("#crash-cashout-btn");
     const myStatus = body.querySelector("#crash-my-status");
-
-    if (st.status === "running" && st.started_at) {
-      if (crashAnimRoundId !== st.round_id) {
-        crashAnimRoundId = st.round_id;
-        if (crashLocalAnim) cancelAnimationFrame(crashLocalAnim);
-        const startedAt = st.started_at;
-        const tick = () => {
-          const elapsed = (Date.now() / 1000) - startedAt;
-          const m = Math.max(1, Math.pow(1.07, elapsed)).toFixed(2);
-          if (multEl) multEl.innerText = `${m}x`;
-          crashLocalAnim = requestAnimationFrame(tick);
-        };
-        tick();
-      }
-      statusEl.innerHTML = `<span style="color:var(--green); font-weight:700;">● Раунд идёт</span>`;
-      timerEl.innerText = "";
-    } else {
-      if (crashLocalAnim) { cancelAnimationFrame(crashLocalAnim); crashLocalAnim = null; }
-      crashAnimRoundId = null;
-      if (st.status === "betting") {
-        if (multEl) multEl.innerText = "1.00x";
-        statusEl.innerHTML = `<span style="color:var(--accent); font-weight:700;">● Приём ставок</span>`;
-        timerEl.innerText = `${Math.ceil(num(st.betting_ends_in))} сек`;
-      } else if (st.status === "crashed") {
-        if (multEl) multEl.innerText = `${num(st.crash_point).toFixed(2)}x`;
-        statusEl.innerHTML = `<span style="color:var(--red); font-weight:700;">💥 Краш</span>`;
-        timerEl.innerText = "";
-      } else {
-        if (multEl) multEl.innerText = "1.00x";
-        statusEl.innerText = "Ожидание…";
-      }
-    }
 
     const my = st.my_bet;
     const canBet = st.status === "betting" && !my;
@@ -2304,7 +2418,7 @@ function renderKeno() {
   };
 }
 
-/* ==================== HI-LO (2-mode hexagons) ==================== */
+/* ==================== HI-LO ==================== */
 function renderHilo() {
   const body = document.getElementById("game-body");
   const SUITS = ["♠","♥","♦","♣"];
@@ -2515,7 +2629,7 @@ function renderHilo() {
   })();
 }
 
-/* ==================== SCRATCH (9-cell, always triplet) ==================== */
+/* ==================== SCRATCH ==================== */
 function renderScratch() {
   const body = document.getElementById("game-body");
 
@@ -2765,7 +2879,7 @@ function renderScratch() {
       let lastCheck = 0;
       function checkProgress() {
         const now = Date.now();
-        if (now - lastCheck < 180) return;
+        if (now - lastCheck < 250) return;
         lastCheck = now;
         try {
           const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
