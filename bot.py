@@ -64,8 +64,8 @@ START_TIME = time.time()
 GAMES_ENABLED = {
     "crash": True, "mines": True, "roulette": True, "dice": True,
     "plinko": True, "blackjack": True, "tower": True,
-    "basket": True, "dart": True, "football": True,
     "keno": True, "hilo": True, "scratch": True,
+    "duel": True,
 }
 
 def ensure_game_enabled(game: str):
@@ -73,8 +73,8 @@ def ensure_game_enabled(game: str):
         raise HTTPException(503, f"игра {game} временно отключена")
 
 # ================== Rakeback claim ==================
-RAKEBACK_CLAIM_COOLDOWN_MIN = 10  # раз в 10 минут
-RAKEBACK_MIN_CLAIM = 0.01         # минимум для claim
+RAKEBACK_CLAIM_COOLDOWN_MIN = 10
+RAKEBACK_MIN_CLAIM = 0.01
 
 # ================== XP / Levels ==================
 MAX_LEVEL = 50
@@ -84,7 +84,6 @@ LEVEL_REWARDS = {
 }
 
 def xp_for_level(level: int) -> float:
-    """Всего XP, нужно для достижения уровня level (level>=1)."""
     if level <= 1: return 0
     return round(30 * (level - 1) * level, 2)
 
@@ -138,7 +137,6 @@ def vip_info(p: dict) -> dict:
         if t["wagered"] > wagered:
             nxt = t; break
 
-    # кулдаун рейкбека
     can_claim = True
     next_claim_in = 0
     last = p.get("last_rakeback_at")
@@ -165,7 +163,7 @@ def vip_info(p: dict) -> dict:
         "next_tier": nxt["id"] if nxt else None,
         "next_tier_name": nxt["name"] if nxt else None,
         "next_tier_at": nxt["wagered"] if nxt else 0,
-        "next_required": nxt["wagered"] if nxt else 0,   # фикс "МАКС"
+        "next_required": nxt["wagered"] if nxt else 0,
     }
 
 async def update_vip_tier(uid):
@@ -192,13 +190,11 @@ async def add_wager(uid, amount):
 
         new_wagered = round(float(row.get("total_wagered") or 0) + amount, 8)
 
-        # рейкбек — накопительно
         tier = compute_vip_tier(new_wagered)
         pct = tier["rakeback"]
         rakeback_add = round(amount * pct, 8)
         new_rakeback = round(float(row.get("rakeback_pending") or 0) + rakeback_add, 8)
 
-        # XP
         old_xp = float(row.get("xp") or 0)
         new_xp = round(old_xp + amount, 2)
         old_level = int(row.get("level") or level_from_xp(old_xp))
@@ -214,7 +210,6 @@ async def add_wager(uid, amount):
 
         await sb(supabase.table("profiles").update(upd).eq("id", uid))
 
-        # награды за достижение уровня
         if new_level > old_level:
             for lvl in range(old_level + 1, new_level + 1):
                 if lvl in LEVEL_REWARDS:
@@ -241,71 +236,59 @@ async def add_wager(uid, amount):
     except Exception:
         log.exception("add_wager failed")
 
-# ================== PREDICTION GAMES ==================
-DICE_GAMES = {
-    "dice":     {"emoji": "🎲", "min": 1, "max": 6, "name": "Кубик"},
-    "basket":   {"emoji": "🏀", "min": 1, "max": 5, "name": "Баскетбол"},
-    "dart":     {"emoji": "🎯", "min": 1, "max": 6, "name": "Дартс"},
-    "football": {"emoji": "⚽", "min": 1, "max": 5, "name": "Футбол"},
-}
+# ================== DUEL (против бота) ==================
+DUEL_BETS    = [0.5, 1, 5, 10, 25, 50]
+DUEL_TARGETS = [1, 2, 3]
+DUEL_PAYOUT  = round(2 * (1 - HOUSE_EDGE), 4)   # 1.92 при HE 4%
 
-DICE_PREDICTIONS = {
-    "dice": {
-        "even": {"label": "Чёт", "mult": 1.92}, "odd": {"label": "Нечёт", "mult": 1.92},
-        "low": {"label": "1-3", "mult": 1.92}, "high": {"label": "4-6", "mult": 1.92},
-        "num": {"label": "Точное число", "mult": 5.76},
-    },
-    "basket": {
-        "low": {"label": "1-2", "mult": 1.6}, "high": {"label": "3-5", "mult": 1.6},
-        "num": {"label": "Точное число", "mult": 4.8},
-    },
-    "dart": {
-        "red": {"label": "Красное 1-2", "mult": 2.88}, "white": {"label": "Белое 3-5", "mult": 1.92},
-        "center": {"label": "Центр 6", "mult": 5.76}, "num": {"label": "Точное число", "mult": 5.76},
-    },
-    "football": {
-        "goal": {"label": "Гол 4-5", "mult": 2.4}, "miss": {"label": "Мимо 1-3", "mult": 1.6},
-        "num": {"label": "Точное число", "mult": 4.8},
-    },
-}
+DICE_FACES = {1:"⚀",2:"⚁",3:"⚂",4:"⚃",5:"⚄",6:"⚅"}
 
-def eval_prediction(game, result, ptype, pvalue=None):
-    if game == "dice":
-        if ptype == "num":  return result == int(pvalue)
-        if ptype == "even": return result % 2 == 0
-        if ptype == "odd":  return result % 2 == 1
-        if ptype == "low":  return 1 <= result <= 3
-        if ptype == "high": return 4 <= result <= 6
-    if game == "basket":
-        if ptype == "num":  return result == int(pvalue)
-        if ptype == "low":  return result <= 2
-        if ptype == "high": return result >= 3
-    if game == "dart":
-        if ptype == "num":    return result == int(pvalue)
-        if ptype == "red":    return 1 <= result <= 2
-        if ptype == "white":  return 3 <= result <= 5
-        if ptype == "center": return result == 6
-    if game == "football":
-        if ptype == "num":  return result == int(pvalue)
-        if ptype == "goal": return result >= 4
-        if ptype == "miss": return result <= 3
-    return False
+def _faces(vals):
+    return " ".join(DICE_FACES.get(v, "🎲") for v in vals)
 
-def zone_label(game, val):
-    if game == "dart":
-        if val in (1, 2):    return "🔴 красное"
-        if val in (3, 4, 5): return "⚪ белое"
-        if val == 6:         return "🎯 центр"
-    if game == "dice": return "чёт" if val % 2 == 0 else "нечёт"
-    if game == "basket": return "промах" if val <= 2 else "забил"
-    if game == "football": return "мимо" if val <= 3 else "гол"
-    return ""
+def duel_home_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎲 1 куб",   callback_data="duel:cfg:1:0"),
+         InlineKeyboardButton(text="🎲 2 куба",  callback_data="duel:cfg:2:0"),
+         InlineKeyboardButton(text="🎲 3 куба",  callback_data="duel:cfg:3:0")],
+        [InlineKeyboardButton(text="🌀 Крэзи 1", callback_data="duel:cfg:1:1"),
+         InlineKeyboardButton(text="🌀 Крэзи 2", callback_data="duel:cfg:2:1"),
+         InlineKeyboardButton(text="🌀 Крэзи 3", callback_data="duel:cfg:3:1")],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
 
-PLINKO_MULTS = {
-    8:  [5.6, 2.1, 1.1, 1.0, 0.5, 1.0, 1.1, 2.1, 5.6],
-    12: [10, 3, 1.6, 1.4, 1.1, 1.0, 0.5, 1.0, 1.1, 1.4, 1.6, 3, 10],
-    16: [16, 9, 2, 1.4, 1.4, 1.2, 1.1, 1.0, 0.5, 1.0, 1.1, 1.2, 1.4, 1.4, 2, 9, 16],
-}
+def duel_target_kb(count: int, crazy: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="До 1 очка",  callback_data=f"duel:tgt:{count}:{crazy}:1"),
+         InlineKeyboardButton(text="До 2 очков", callback_data=f"duel:tgt:{count}:{crazy}:2"),
+         InlineKeyboardButton(text="До 3 очков", callback_data=f"duel:tgt:{count}:{crazy}:3")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="duel:home")]])
+
+def duel_bet_kb(count: int, crazy: int, target: int):
+    rows = []
+    for i in range(0, len(DUEL_BETS), 3):
+        rows.append([InlineKeyboardButton(
+            text=f"{b} ₮",
+            callback_data=f"duel:bet:{count}:{crazy}:{target}:{b}"
+        ) for b in DUEL_BETS[i:i+3]])
+    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data=f"duel:betcustom:{count}:{crazy}:{target}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"duel:cfg:{count}:{crazy}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def duel_roll_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎲 Кинуть кости", callback_data="duel:roll")],
+        [InlineKeyboardButton(text="🏳️ Сдаться",      callback_data="duel:surrender")]])
+
+def duel_again_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Ещё раз",      callback_data="duel:again")],
+        [InlineKeyboardButton(text="🎲 Настройки",    callback_data="duel:home"),
+         InlineKeyboardButton(text="🏠 Меню",         callback_data="menu:main")]])
+
+class DuelState(StatesGroup):
+    playing = State()
+    custom_bet = State()
+
 
 # ================== KENO ==================
 KENO_PAYOUTS = {
@@ -407,9 +390,6 @@ class AmountInput(StatesGroup):
 
 class AdminInput(StatesGroup):
     broadcast = State()
-
-class PredictionInput(StatesGroup):
-    custom_bet = State()
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -652,12 +632,11 @@ async def check_pending_deposits(user_id: str):
                 continue
             status = (data.get("status") or "").lower()
             if status in ("paid", "completed", "success"):
-                # ✅ Атомарный захват: сначала помечаем processing, только потом начисляем
                 claim = await sb(supabase.table("transactions")
                                  .update({"status": "processing"})
                                  .eq("id", tx["id"]).eq("status", "pending"))
                 if not claim.data:
-                    continue  # webhook уже забрал
+                    continue
                 await sb_rpc("change_balance",
                              {"p_user_id": tx["user_id"], "p_delta": float(tx["amount"])})
                 await sb(supabase.table("transactions").update({
@@ -1092,7 +1071,7 @@ dp = Dispatcher()
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎲 Предсказания", callback_data="pg:home")],
+        [InlineKeyboardButton(text="🎲 Дуэль с ботом", callback_data="duel:home")],
         [InlineKeyboardButton(text="💰 Пополнить", callback_data="menu:deposit"),
          InlineKeyboardButton(text="💸 Вывести", callback_data="menu:withdraw")],
         [InlineKeyboardButton(text="👥 Друзья", callback_data="menu:ref"),
@@ -1119,66 +1098,307 @@ def fmt_stats(s, balance, first_name, vip=None):
             base += f"\nДо {vip['next_tier_name']}: {left:.2f} ₮"
     return base
 
-# ================== PREDICTION KEYBOARDS ==================
-def pred_home_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎲 Кубик", callback_data="pgm:dice"),
-         InlineKeyboardButton(text="🏀 Баскетбол", callback_data="pgm:basket")],
-        [InlineKeyboardButton(text="🎯 Дартс", callback_data="pgm:dart"),
-         InlineKeyboardButton(text="⚽ Футбол", callback_data="pgm:football")],
-        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
+# ================== DUEL FLOW ==================
+async def _duel_roll(chat_id: int, n: int):
+    msgs = await asyncio.gather(*[
+        bot.send_dice(chat_id=chat_id, emoji="🎲") for _ in range(n)
+    ])
+    await asyncio.sleep(3.6)
+    return [m.dice.value for m in msgs]
 
-def pred_bet_kb(game):
-    amounts = [0.5, 1, 5, 10, 25, 50]
-    rows = []
-    for i in range(0, len(amounts), 3):
-        rows.append([InlineKeyboardButton(text=f"{a} ₮", callback_data=f"pgb:{game}:{a}") for a in amounts[i:i+3]])
-    rows.append([InlineKeyboardButton(text="✏️ Своя сумма", callback_data=f"pgcb:{game}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="pg:home"),
-                 InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def pred_type_kb(game, bet):
-    back_row = [InlineKeyboardButton(text="⬅️ Ставка", callback_data=f"pgm:{game}"),
-                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]
-    if game == "dice":
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Чёт", callback_data=f"pgr:{game}:{bet}:even"),
-             InlineKeyboardButton(text="Нечёт", callback_data=f"pgr:{game}:{bet}:odd")],
-            [InlineKeyboardButton(text="1-3", callback_data=f"pgr:{game}:{bet}:low"),
-             InlineKeyboardButton(text="4-6", callback_data=f"pgr:{game}:{bet}:high")],
-            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
-            back_row])
-    if game == "basket":
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Забил 3-5", callback_data=f"pgr:{game}:{bet}:high"),
-             InlineKeyboardButton(text="Промазал 1-2", callback_data=f"pgr:{game}:{bet}:low")],
-            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
-            back_row])
-    if game == "dart":
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔴 Красное 1-2", callback_data=f"pgr:{game}:{bet}:red")],
-            [InlineKeyboardButton(text="⚪ Белое 3-5",   callback_data=f"pgr:{game}:{bet}:white")],
-            [InlineKeyboardButton(text="🎯 Центр 6",     callback_data=f"pgr:{game}:{bet}:center")],
-            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
-            back_row])
-    if game == "football":
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚽ Гол 4-5", callback_data=f"pgr:{game}:{bet}:goal"),
-             InlineKeyboardButton(text="❌ Мимо 1-3", callback_data=f"pgr:{game}:{bet}:miss")],
-            [InlineKeyboardButton(text="🔢 Точное число", callback_data=f"pgn:{game}:{bet}")],
-            back_row])
-    return InlineKeyboardMarkup(inline_keyboard=[back_row])
+@dp.callback_query(F.data == "duel:home")
+async def cb_duel_home(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = ("🎲 <b>Дуэль против бота</b>\n\n"
+            "Выбери количество кубиков.\n"
+            "Обычная игра — побеждает тот, кто выбросит <b>больше</b>.\n"
+            "🌀 Крэзи — побеждает тот, кто выбросит <b>меньше</b>.\n\n"
+            "Каждый раунд ты и бот кидаете одинаковое число кубиков.\n"
+            "Победитель раунда получает 1 очко. Кто первый дойдёт до цели — забирает банк.")
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=duel_home_kb())
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=duel_home_kb())
 
-def pred_number_kb(game, bet):
-    max_n = DICE_GAMES[game]["max"]
-    rows = []; row = []
-    for n in range(1, max_n + 1):
-        row.append(InlineKeyboardButton(text=str(n), callback_data=f"pgr:{game}:{bet}:num:{n}"))
-        if len(row) == 3: rows.append(row); row = []
-    if row: rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"pgb:{game}:{bet}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+@dp.callback_query(F.data.startswith("duel:cfg:"))
+async def cb_duel_cfg(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    _, _, count_s, crazy_s = cb.data.split(":")
+    count = int(count_s); crazy = int(crazy_s)
+    icon = "🌀" if crazy else "🎲"
+    mode = "Крэзи (меньше — лучше)" if crazy else "Обычная (больше — лучше)"
+    text = (f"{icon} <b>{count} куб.</b> · {mode}\n\n"
+            f"До скольких очков играем?\n"
+            f"Победитель раунда получает 1 очко.")
+    await cb.message.edit_text(text, parse_mode="HTML",
+                               reply_markup=duel_target_kb(count, crazy))
+
+
+@dp.callback_query(F.data.startswith("duel:tgt:"))
+async def cb_duel_tgt(cb: CallbackQuery, state: FSMContext):
+    _, _, count_s, crazy_s, target_s = cb.data.split(":")
+    count = int(count_s); crazy = int(crazy_s); target = int(target_s)
+    text = (f"💰 <b>Ставка</b>\n\n"
+            f"🎲 {count} куб. · {'🌀 Крэзи' if crazy else '🎲 Обычная'} · до {target} очк.\n"
+            f"Победитель дуэли получает <b>×{DUEL_PAYOUT}</b> от ставки.")
+    await cb.message.edit_text(text, parse_mode="HTML",
+                               reply_markup=duel_bet_kb(count, crazy, target))
+
+
+@dp.callback_query(F.data.startswith("duel:betcustom:"))
+async def cb_duel_betcustom(cb: CallbackQuery, state: FSMContext):
+    _, _, count_s, crazy_s, target_s = cb.data.split(":")
+    await state.set_state(DuelState.custom_bet)
+    await state.update_data(count=int(count_s), crazy=int(crazy_s), target=int(target_s))
+    await cb.message.edit_text(
+        f"✏️ Введи ставку ({MIN_BET}–{MAX_BET} ₮):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад",
+                callback_data=f"duel:tgt:{count_s}:{crazy_s}:{target_s}")]]))
+
+
+@dp.message(DuelState.custom_bet)
+async def fsm_duel_custom_bet(message: Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        bet = float((message.text or "").replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return await message.answer("❌ Введи число")
+    if not (MIN_BET <= bet <= MAX_BET):
+        return await message.answer(f"❌ Ставка должна быть {MIN_BET}–{MAX_BET}")
+    count = int(data["count"]); crazy = int(data["crazy"]); target = int(data["target"])
+    await state.clear()
+    await _duel_start(message, message.from_user.model_dump(), count, crazy, target, bet, edit=False)
+
+
+@dp.callback_query(F.data.startswith("duel:bet:"))
+async def cb_duel_bet(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    _, _, count_s, crazy_s, target_s, bet_s = cb.data.split(":")
+    count = int(count_s); crazy = int(crazy_s); target = int(target_s)
+    try: bet = float(bet_s)
+    except ValueError: return await cb.answer("Ошибка", show_alert=True)
+    await _duel_start(cb.message, cb.from_user.model_dump(), count, crazy, target, bet, edit=True)
+
+
+async def _duel_start(msg, tg_user, count, crazy, target, bet, edit=False):
+    if not (MIN_BET <= bet <= MAX_BET):
+        return await _answer(msg, f"❌ Ставка {MIN_BET}–{MAX_BET}", edit)
+
+    p = await get_or_create_profile(tg_user)
+    try:
+        await ensure_not_banned(p)
+        await check_bonus_max_bet(p, bet)
+        await check_bonus_game(p, "duel")
+        await check_rate_limit(p["id"], "bet")
+    except HTTPException as e:
+        return await _answer(msg, e.detail, edit)
+
+    if float(p["balance"]) < bet:
+        return await _answer(msg, "❌ Недостаточно средств", edit)
+
+    if await get_active_round(p["id"]):
+        return await _answer(msg, "❌ Есть незавершённая игра. Заверши её сначала.", edit)
+
+    await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
+    asyncio.create_task(add_wager(p["id"], bet))
+    asyncio.create_task(apply_wager_progress(p["id"], bet))
+
+    st = {"count": count, "crazy": crazy, "target": target, "bet": bet,
+          "ps": 0, "bs": 0, "round": 1}
+    await sb(supabase.table("active_rounds").insert({
+        "user_id": p["id"], "game_type": "duel", "bet_amount": bet,
+        "state": st, "server_seed": "", "nonce": 0}))
+
+    icon = "🌀" if crazy else "🎲"
+    text = (f"{icon} <b>Дуэль началась!</b>\n\n"
+            f"🎲 {count} куб. · {'Крэзи' if crazy else 'Обычная'} · до {target} очк.\n"
+            f"Ставка: {bet:.2f} ₮\n\n"
+            f"<b>Ты: 0</b>  ·  Бот: 0\n\n"
+            f"Раунд 1 — жми кнопку.")
+    if edit:
+        try:
+            await msg.edit_text(text, parse_mode="HTML", reply_markup=duel_roll_kb())
+        except Exception:
+            await bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=duel_roll_kb())
+    else:
+        await msg.answer(text, parse_mode="HTML", reply_markup=duel_roll_kb())
+
+
+async def _answer(target, text, edit):
+    try:
+        if edit: await target.edit_text(f"⚠️ {text}")
+        else:    await target.answer(f"⚠️ {text}")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "duel:roll")
+async def cb_duel_roll(cb: CallbackQuery, state: FSMContext):
+    p = await get_or_create_profile(cb.from_user.model_dump())
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "duel":
+        return await cb.answer("Нет активной дуэли", show_alert=True)
+    st = ar["state"]
+    count = int(st["count"]); crazy = int(st["crazy"])
+    target = int(st["target"]); bet = float(st["bet"])
+    ps = int(st["ps"]); bs = int(st["bs"])
+    round_no = ps + bs + 1
+
+    await cb.answer()
+
+    await cb.message.edit_text(f"🎲 Раунд {round_no}\n\n🤖 Бот бросает {count} куб...")
+    try:
+        bot_vals = await _duel_roll(cb.message.chat.id, count)
+    except Exception:
+        log.exception("duel bot roll failed")
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+        await clear_active_round(p["id"])
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "admin", "amount": bet,
+            "currency": "USDT", "status": "completed",
+            "meta": {"action": "duel_refund", "reason": "bot_roll_failed"}}))
+        return await cb.message.edit_text("❌ Ошибка анимации. Ставка возвращена.",
+                                          reply_markup=duel_again_kb())
+    bot_sum = sum(bot_vals)
+
+    await cb.message.edit_text(
+        f"🎲 Раунд {round_no}\n\n"
+        f"🤖 Бот: {bot_vals} = <b>{bot_sum}</b>\n"
+        f"👤 Твой бросок...")
+    try:
+        player_vals = await _duel_roll(cb.message.chat.id, count)
+    except Exception:
+        log.exception("duel player roll failed")
+        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+        await clear_active_round(p["id"])
+        await sb(supabase.table("transactions").insert({
+            "user_id": p["id"], "type": "admin", "amount": bet,
+            "currency": "USDT", "status": "completed",
+            "meta": {"action": "duel_refund", "reason": "player_roll_failed"}}))
+        return await cb.message.edit_text("❌ Ошибка анимации. Ставка возвращена.",
+                                          reply_markup=duel_again_kb())
+    player_sum = sum(player_vals)
+
+    tie = (player_sum == bot_sum)
+    if tie:
+        result_line = "🤝 Ничья — раунд переигрывается!"
+    elif crazy:
+        if player_sum < bot_sum:
+            ps += 1; result_line = "✅ Ты выиграл раунд!"
+        else:
+            bs += 1; result_line = "❌ Бот выиграл раунд"
+    else:
+        if player_sum > bot_sum:
+            ps += 1; result_line = "✅ Ты выиграл раунд!"
+        else:
+            bs += 1; result_line = "❌ Бот выиграл раунд"
+
+    st["ps"] = ps; st["bs"] = bs; st["round"] = round_no + 1
+
+    if ps >= target or bs >= target:
+        player_won = ps >= target
+        payout = 0.0; profit = -bet
+
+        if player_won:
+            payout = round(bet * DUEL_PAYOUT, 8)
+            profit = round(payout - bet, 8)
+            await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
+            await sb(supabase.table("transactions").insert({
+                "user_id": p["id"], "type": "win", "amount": profit,
+                "currency": "USDT", "status": "completed",
+                "meta": {"game": "duel", "won": True,
+                         "count": count, "crazy": bool(crazy), "target": target}}))
+        else:
+            asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+
+        await log_round(p["id"], "duel", bet,
+                        {"count": count, "crazy": bool(crazy), "target": target,
+                         "player": ps, "bot": bs, "won": player_won},
+                        profit, "", 0)
+        await clear_active_round(p["id"])
+
+        p2 = await get_or_create_profile(cb.from_user.model_dump())
+        bal = float(p2["balance"])
+        wager_reset = False
+        if not player_won and bal < WAGER_RESET_THRESHOLD:
+            wager_reset = await check_and_reset_wager_if_broke(p2["id"])
+
+        await state.update_data(count=count, crazy=crazy, target=target, bet=bet)
+
+        if player_won:
+            final = (f"🏆 <b>ПОБЕДА!</b>\n\n"
+                     f"🤖 Бот: {bot_vals} = {bot_sum}\n"
+                     f"👤 Ты: {player_vals} = {player_sum}\n\n"
+                     f"{result_line}\n\n"
+                     f"Счёт: <b>Ты {ps}</b> · Бот {bs}\n\n"
+                     f"💰 Выплата: +{payout:.2f} ₮ (×{DUEL_PAYOUT})\n"
+                     f"💵 Чистыми: +{profit:.2f} ₮\n"
+                     f"💎 Баланс: <b>{bal:.2f} ₮</b>")
+        else:
+            final = (f"💀 <b>Проигрыш</b>\n\n"
+                     f"🤖 Бот: {bot_vals} = {bot_sum}\n"
+                     f"👤 Ты: {player_vals} = {player_sum}\n\n"
+                     f"{result_line}\n\n"
+                     f"Счёт: Ты {ps} · <b>Бот {bs}</b>\n\n"
+                     f"😢 Потеряно: −{bet:.2f} ₮\n"
+                     f"💎 Баланс: <b>{bal:.2f} ₮</b>")
+        if wager_reset:
+            final += "\n♻️ Бонус сброшен (баланс ниже порога)"
+
+        await cb.message.edit_text(final, parse_mode="HTML", reply_markup=duel_again_kb())
+        return
+
+    await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
+
+    icon = "🌀" if crazy else "🎲"
+    text = (f"{icon} Раунд {round_no} завершён\n\n"
+            f"🤖 Бот: {bot_vals} = <b>{bot_sum}</b>\n"
+            f"👤 Ты: {player_vals} = <b>{player_sum}</b>\n\n"
+            f"{result_line}\n\n"
+            f"<b>Ты: {ps}</b>  ·  Бот: {bs}   (до {target})\n\n"
+            f"Раунд {st['round']} — жми кнопку.")
+    await cb.message.edit_text(text, parse_mode="HTML", reply_markup=duel_roll_kb())
+
+
+@dp.callback_query(F.data == "duel:again")
+async def cb_duel_again(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    count = data.get("count"); crazy = data.get("crazy")
+    target = data.get("target"); bet = data.get("bet")
+    if count is None:
+        return await cb_duel_home(cb, state)
+    await state.clear()
+    await _duel_start(cb.message, cb.from_user.model_dump(),
+                      int(count), int(crazy), int(target), float(bet), edit=True)
+
+
+@dp.callback_query(F.data == "duel:surrender")
+async def cb_duel_surrender(cb: CallbackQuery, state: FSMContext):
+    p = await get_or_create_profile(cb.from_user.model_dump())
+    ar = await get_active_round(p["id"])
+    if not ar or ar["game_type"] != "duel":
+        return await cb.answer("Нет активной дуэли", show_alert=True)
+    st = ar["state"]; bet = float(st["bet"]); ps = int(st["ps"]); bs = int(st["bs"])
+    await clear_active_round(p["id"])
+    await log_round(p["id"], "duel", bet,
+                    {"count": st["count"], "crazy": bool(st["crazy"]),
+                     "target": st["target"], "surrender": True,
+                     "player": ps, "bot": bs, "won": False},
+                    -bet, "", 0)
+    asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
+    asyncio.create_task(check_and_reset_wager_if_broke(p["id"]))
+    bal = float((await get_or_create_profile(cb.from_user.model_dump()))["balance"])
+    await state.update_data(count=int(st["count"]), crazy=int(st["crazy"]),
+                            target=int(st["target"]), bet=bet)
+    await cb.message.edit_text(
+        f"🏳️ <b>Сдался</b>\n\n"
+        f"Счёт: Ты {ps} · Бот {bs}\n"
+        f"Потеряно: −{bet:.2f} ₮\n"
+        f"💎 Баланс: <b>{bal:.2f} ₮</b>",
+        parse_mode="HTML", reply_markup=duel_again_kb())
 
 # ================== ADMIN HELPERS ==================
 def admin_only(message: Message) -> bool:
@@ -1206,7 +1426,7 @@ async def cmd_ahelp(message: Message):
         "/aresetnonce /aresetserver /asetvip ID TIER /arak ID [сумма]\n"
         "/arisk ID /aflag ID [reason] /aunflag ID /aalts ID /aantifraud /asamelist\n"
         "/astats /aggr /abalances /aonline /arich /adaily /aweekly /agames\n"
-        "/atop /atopdep /atopwd /arp /avip [ID]\n"
+        "/atop /atopdep /atopwd /arp /avip [ID] /aduelinfo\n"
         "/atx /atxlast /arefund /acheckpending\n"
         "/anewpromo CODE SUM [WAGER] [USES] [MAX_BET] [GAMES]\n"
         "/alistpromos /adelpromo /adelallpromos /apromoinfo /awager /aresetwager\n"
@@ -1264,6 +1484,18 @@ async def cmd_aoffall(message: Message):
     for g in GAMES_ENABLED: GAMES_ENABLED[g] = False
     await message.answer("⛔ Все игры выкл")
 
+@dp.message(Command("aduelinfo"))
+async def cmd_aduelinfo(message: Message):
+    if not admin_only(message): return
+    await message.answer(
+        f"🎲 <b>Дуэль</b>\n\n"
+        f"Множитель победы: <b>×{DUEL_PAYOUT}</b>\n"
+        f"HE: <b>{100-HOUSE_EDGE*100:.1f}%</b>\n"
+        f"Ставки: {', '.join(str(b) for b in DUEL_BETS)}\n"
+        f"Режимы: 1/2/3 куба · обычная/крэзи\n"
+        f"Цели: до 1/2/3 очков",
+        parse_mode="HTML")
+
 @dp.message(Command("acheckpending"))
 async def cmd_acheckpending(message: Message):
     if not admin_only(message): return
@@ -1277,8 +1509,7 @@ async def cmd_acheckpending(message: Message):
     if not txs:
         return await message.answer("Нет pending депозитов")
     await message.answer(f"🔎 Проверяю {len(txs)} pending…")
-    credited = 0
-    failed = 0
+    credited = 0; failed = 0
     for tx in txs:
         inv_id = (tx.get("meta") or {}).get("invoice_id")
         if not inv_id:
@@ -1364,7 +1595,6 @@ async def cmd_arak(message: Message, command: CommandObject):
         "user_id": p["id"], "type": "bonus", "amount": amount,
         "currency": "USDT", "status": "completed", "meta": {"source": "rakeback"}}))
     await message.answer(f"✅ Рейкбек +{amount:.2f} → {p['telegram_id']}")
-
 
 @dp.message(Command("atestsub"))
 async def cmd_atestsub(message: Message, command: CommandObject):
@@ -1817,8 +2047,8 @@ async def cmd_arp(message: Message):
     if not admin_only(message): return
     await message.answer(
         f"📊 RTP общий: <b>{100-HOUSE_EDGE*100:.2f}%</b>\n\n"
-        f"🎲 Dice · 🏀 Basket · 🎯 Dart · ⚽ Football · 💥 Crash · 💎 Mines\n"
-        f"🎡 Roulette · 🃏 BJ · 🎰 Plinko · 🗼 Tower · 🎯 Keno · 🃏 Hi-Lo · 🎟 Scratch",
+        f"🎲 Дуэль · 💥 Crash · 💎 Mines · 🎡 Roulette\n"
+        f"🎲 Dice · 🃏 BJ · 🎰 Plinko · 🗼 Tower · 🎯 Keno · 🃏 Hi-Lo · 🎟 Scratch",
         parse_mode="HTML")
 
 @dp.message(Command("atx"))
@@ -2033,7 +2263,7 @@ async def cmd_asetmaxwd(message: Message, command: CommandObject):
 
 @dp.message(Command("asetrtp"))
 async def cmd_asetrtp(message: Message, command: CommandObject):
-    global HOUSE_EDGE, DICE_PAYOUT, ROUL_RB_PAYOUT, ROUL_DOZEN_PAYOUT, ROUL_NUM_PAYOUT
+    global HOUSE_EDGE, DICE_PAYOUT, ROUL_RB_PAYOUT, ROUL_DOZEN_PAYOUT, ROUL_NUM_PAYOUT, DUEL_PAYOUT
     if not admin_only(message): return
     try: rtp = float(command.args)
     except: return await message.answer("/asetrtp 0.96")
@@ -2043,7 +2273,8 @@ async def cmd_asetrtp(message: Message, command: CommandObject):
     ROUL_RB_PAYOUT = round(2 * (1 - HOUSE_EDGE), 4)
     ROUL_DOZEN_PAYOUT = round(3 * (1 - HOUSE_EDGE), 4)
     ROUL_NUM_PAYOUT = round(36 * (1 - HOUSE_EDGE), 4)
-    await message.answer(f"✅ RTP = {rtp*100:.1f}%")
+    DUEL_PAYOUT = round(2 * (1 - HOUSE_EDGE), 4)
+    await message.answer(f"✅ RTP = {rtp*100:.1f}%\nDuel payout ×{DUEL_PAYOUT}")
 
 @dp.message(Command("asetref"))
 async def cmd_asetref(message: Message, command: CommandObject):
@@ -2181,7 +2412,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
     cur = p.get("preferred_currency") or "USDT"
     await message.answer(
         f"👋 <b>GoldCash!</b>\n\n💎 Баланс: <b>{float(p['balance']):.2f} {cur}</b>{bonus_line}\n\n"
-        f"🎲 Предсказания · 🌐 Mini App (Mines, Roulette, Plinko, Blackjack, Tower, Crash, Keno, Hi-Lo, Scratch)\n"
+        f"🎲 Дуэль с ботом · 🌐 Mini App (Mines, Roulette, Plinko, Blackjack, Tower, Crash, Keno, Hi-Lo, Scratch)\n"
         f"💰 Пополнение / вывод через @xRocket\n👥 Друзья: {REFERRAL_SHARE*100:.0f}%\n\n"
         f"/help{extra}",
         reply_markup=main_menu(), parse_mode="HTML")
@@ -2214,7 +2445,7 @@ async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
 async def cmd_help(message: Message):
     await message.answer(
         "📖 <b>GoldCash</b>\n"
-        "🎲 Предсказания: 🎲🏀🎯⚽\n"
+        "🎲 Дуэль с ботом: 1-3 куба · обычная или 🌀 Крэзи · до 1/2/3 очков\n"
         "🌐 Mini App: Mines, Roulette, Plinko, Blackjack, Tower, Crash, Keno, Hi-Lo, Scratch\n"
         f"💰 Мин.вывод {MIN_WITHDRAW}₮ · Кулдаун {WITHDRAW_COOLDOWN_MIN}м · Лимит {MAX_WITHDRAW_DAILY}/сутки\n"
         f"👥 Рефералка {REFERRAL_SHARE*100:.0f}%\n"
@@ -2321,133 +2552,6 @@ async def try_redeem_promo(message: Message, code: str):
     txt = f"✅ +{amount}₮"
     if wager_required > 0: txt += f"\n🎰 Вейджер ×{wager_mult} ({wager_required:.2f}₮)"
     await message.answer(txt)
-
-# ================== PREDICTION FLOW ==================
-@dp.callback_query(F.data == "pg:home")
-async def cb_pg_home(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cb.message.edit_text("🎲 <b>Предсказания</b>", parse_mode="HTML", reply_markup=pred_home_kb())
-
-@dp.callback_query(F.data.startswith("pgm:"))
-async def cb_pg_game(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    game = cb.data.split(":")[1]
-    if game not in DICE_GAMES: return await cb.answer("Ошибка")
-    if not GAMES_ENABLED.get(game, True): return await cb.answer("⛔ выкл", show_alert=True)
-    g = DICE_GAMES[game]
-    await cb.message.edit_text(f"{g['emoji']} <b>{g['name']}</b>\nВыбери ставку:",
-                               parse_mode="HTML", reply_markup=pred_bet_kb(game))
-
-@dp.callback_query(F.data.startswith("pgcb:"))
-async def cb_pg_custom_bet(cb: CallbackQuery, state: FSMContext):
-    game = cb.data.split(":")[1]
-    if game not in DICE_GAMES: return await cb.answer("Ошибка")
-    await state.set_state(PredictionInput.custom_bet)
-    await state.update_data(game=game)
-    await cb.message.edit_text(f"✏️ Ставка ({MIN_BET}-{MAX_BET}):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️", callback_data=f"pgm:{game}")]]))
-
-@dp.message(PredictionInput.custom_bet)
-async def fsm_pg_custom_bet(message: Message, state: FSMContext):
-    data = await state.get_data(); game = data.get("game")
-    try: bet = float((message.text or "").replace(",", ".").strip())
-    except: return await message.answer("❌")
-    if not (MIN_BET <= bet <= MAX_BET): return await message.answer(f"❌ {MIN_BET}-{MAX_BET}")
-    await state.clear()
-    g = DICE_GAMES[game]
-    await message.answer(f"{g['emoji']} · {bet}₮", reply_markup=pred_type_kb(game, bet))
-
-@dp.callback_query(F.data.startswith("pgb:"))
-async def cb_pg_bet(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    _, game, bet_s = cb.data.split(":")
-    if game not in DICE_GAMES: return await cb.answer("Ошибка")
-    bet = float(bet_s)
-    g = DICE_GAMES[game]
-    await cb.message.edit_text(f"{g['emoji']} · {bet}₮\nВыбери:", reply_markup=pred_type_kb(game, bet))
-
-@dp.callback_query(F.data.startswith("pgn:"))
-async def cb_pg_numbers(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    _, game, bet_s = cb.data.split(":")
-    if game not in DICE_GAMES: return await cb.answer("Ошибка")
-    bet = float(bet_s)
-    g = DICE_GAMES[game]
-    await cb.message.edit_text(f"{g['emoji']} · {bet}₮\nЧисло:", reply_markup=pred_number_kb(game, bet))
-
-@dp.callback_query(F.data.startswith("pgr:"))
-async def cb_pg_run(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    parts = cb.data.split(":")
-    game = parts[1]; bet = float(parts[2]); ptype = parts[3]
-    pvalue = int(parts[4]) if len(parts) > 4 else None
-    if game not in DICE_GAMES: return await cb.answer("Ошибка")
-    if not GAMES_ENABLED.get(game, True): return await cb.answer("⛔", show_alert=True)
-
-    p = await get_or_create_profile(cb.from_user.model_dump())
-    try:
-        await ensure_not_banned(p)
-        await check_bonus_max_bet(p, bet); await check_bonus_game(p, game)
-        await check_rate_limit(p["id"], "bet")
-    except HTTPException as e:
-        return await cb.answer(e.detail, show_alert=True)
-    if float(p["balance"]) < bet: return await cb.answer("❌ мало", show_alert=True)
-
-    try:
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": -bet})
-        asyncio.create_task(add_wager(p["id"], bet))
-        asyncio.create_task(apply_wager_progress(p["id"], bet))
-    except Exception as e:
-        return await cb.answer(f"Ошибка: {e}", show_alert=True)
-
-    g = DICE_GAMES[game]; pm = DICE_PREDICTIONS[game][ptype]
-    label = pm["label"] if ptype != "num" else f"Число {pvalue}"
-
-    await cb.message.edit_text(
-        f"{g['emoji']} <b>{g['name']}</b> · {bet}₮\nТвоё: <b>{label}</b>\n\n{g['emoji']} Бросаем…",
-        parse_mode="HTML")
-
-    try:
-        dice_msg = await bot.send_dice(chat_id=cb.message.chat.id, emoji=g["emoji"])
-        result = dice_msg.dice.value
-        await asyncio.sleep(3.5)
-    except Exception as e:
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
-        return await cb.message.edit_text(f"❌ {e}", reply_markup=back_kb())
-
-    win = eval_prediction(game, result, ptype, pvalue)
-    profit = -bet; payout = 0.0
-    if win:
-        payout = round(bet * pm["mult"], 8); profit = round(payout - bet, 8)
-        await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": payout})
-        await sb(supabase.table("transactions").insert({
-            "user_id": p["id"], "type": "win", "amount": profit,
-            "currency": "USDT", "status": "completed", "meta": {"game": game}}))
-    else:
-        asyncio.create_task(credit_referrer_on_loss(p["id"], bet))
-
-    await log_round(p["id"], game, bet, {"result": result, "pred": ptype, "win": win}, profit, f"tg_{game}", 0)
-
-    p2 = await get_or_create_profile(cb.from_user.model_dump())
-    bal = float(p2["balance"])
-    wager_reset = False
-    if not win and bal < WAGER_RESET_THRESHOLD:
-        wager_reset = await check_and_reset_wager_if_broke(p2["id"])
-
-    z = zone_label(game, result); z_txt = f" ({z})" if z else ""
-    if win:
-        txt = f"{g['emoji']} Выпало {result}{z_txt}\n✅ +{profit:.2f}₮ (×{pm['mult']})\n💎 {bal:.2f}"
-    else:
-        txt = f"{g['emoji']} Выпало {result}{z_txt}\n❌ −{bet:.2f}₮\n💎 {bal:.2f}"
-    if wager_reset: txt += "\n♻️ бонус сброшен"
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔁 Ещё", callback_data=f"pgb:{game}:{bet}")],
-        [InlineKeyboardButton(text="🎲 Игры", callback_data="pg:home"),
-         InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")]])
-    try: await cb.message.edit_text(txt, reply_markup=kb)
-    except: await bot.send_message(cb.message.chat.id, txt, reply_markup=kb)
 
 # ================== MENU CALLBACKS ==================
 @dp.callback_query(F.data == "menu:main")
@@ -2609,7 +2713,6 @@ async def lifespan(app):
     me = await bot.get_me(); BOT_USERNAME = me.username
     log.info("start · HE=%.3f · admins=%s · bot=@%s · channel=%s · antifraud=%s",
              HOUSE_EDGE, ADMIN_IDS, BOT_USERNAME, CHANNEL_ID or "—", ANTIFRAUD_ENABLED)
-    # Чистим "зависшие" crash-раунды (например, после рестарта)
     try:
         await sb(supabase.table("crash_rounds").update({"status": "crashed"})
                  .in_("status", ["running", "betting"]))
@@ -2650,7 +2753,8 @@ async def config():
         "payouts": {"dice": DICE_PAYOUT, "roulette_rb": ROUL_RB_PAYOUT,
                     "roulette_dozen": ROUL_DOZEN_PAYOUT, "roulette_number": ROUL_NUM_PAYOUT,
                     "plinko": PLINKO_MULTS},
-        "dice_predictions": DICE_PREDICTIONS,
+        "duel_payout": DUEL_PAYOUT,
+        "duel_bets": DUEL_BETS,
         "scratch_tiers": [{"id":t["id"],"name":t["name"],"bet":t["bet"],
                            "color":t["color"],"max":t["max"]} for t in SCRATCH_TIERS],
         "rakeback_cooldown_min": RAKEBACK_CLAIM_COOLDOWN_MIN,
@@ -2706,7 +2810,6 @@ async def vip_claim(user: dict = Depends(get_current_user)):
     if pending < RAKEBACK_MIN_CLAIM:
         raise HTTPException(400, f"минимум для вывода {RAKEBACK_MIN_CLAIM} ₮")
 
-    # кулдаун 10 минут
     last = p.get("last_rakeback_at")
     if last:
         try:
@@ -2954,7 +3057,7 @@ async def api_withdraw(body: dict, user: dict = Depends(get_current_user)):
         log.exception("payout failed"); raise HTTPException(400, str(e))
     return {"ok": True, "payout_id": payout.get("id")}
 
-# ================== FIXED WEBHOOK ==================
+# ================== WEBHOOK ==================
 @app.post("/api/webhook/xrocket")
 async def xrocket_webhook(request: Request):
     raw = await request.body()
@@ -3002,13 +3105,11 @@ async def xrocket_webhook(request: Request):
     log.info("📦 parsed: outer_type=%s inner_event=%s cid=%s invoice_id=%s status=%s",
              outer_type, inner_event, cid, invoice_id, inv_status)
 
-    # ============ ДЕПОЗИТ ============
     if outer_type == "invoice" and inner_event == "invoice_status_changed":
         if inv_status in ("paid", "completed", "success"):
             if not cid and not invoice_id:
                 log.warning("⚠️ no cid / invoice_id in webhook")
                 return {"ok": True}
-
             tx = []
             if cid:
                 tx = (await sb(supabase.table("transactions").select("*")
@@ -3018,15 +3119,13 @@ async def xrocket_webhook(request: Request):
                 tx = (await sb(supabase.table("transactions").select("*")
                                .eq("meta->>invoice_id", str(invoice_id))
                                .eq("status", "pending"))).data or []
-
             if tx:
                 row = tx[0]
-                # ✅ Атомарный захват
                 claim = await sb(supabase.table("transactions")
                                  .update({"status": "processing"})
                                  .eq("id", row["id"]).eq("status", "pending"))
                 if not claim.data:
-                    log.info("already claimed by another worker: %s", row["id"])
+                    log.info("already claimed: %s", row["id"])
                     return {"ok": True}
                 await sb_rpc("change_balance",
                              {"p_user_id": row["user_id"], "p_delta": float(row["amount"])})
@@ -3038,7 +3137,6 @@ async def xrocket_webhook(request: Request):
                              "source": "webhook"},
                 }).eq("id", row["id"]))
                 log.info("✅ DEPOSIT CREDITED user=%s amount=%s", row["user_id"], row["amount"])
-
                 try:
                     prof = (await sb(supabase.table("profiles")
                                      .select("first_name, username, telegram_id")
@@ -3059,7 +3157,6 @@ async def xrocket_webhook(request: Request):
             else:
                 log.warning("⚠️ transaction not found: cid=%s invoice_id=%s", cid, invoice_id)
 
-    # ============ ВЫВОД ============
     if outer_type == "payout" or inner_event == "payout_status_changed":
         payout = data_block.get("payout") or {}
         pcid = (payout.get("clientPayoutId")
@@ -3180,7 +3277,6 @@ async def ws_crash(websocket: WebSocket):
             server_time = time.time()
 
             if key != last_state_key:
-                # Полное состояние при смене раунда/статуса
                 try:
                     recent = await asyncio.to_thread(lambda: supabase.table("crash_rounds")
                         .select("crash_point").eq("status", "crashed")
@@ -3203,7 +3299,6 @@ async def ws_crash(websocket: WebSocket):
                 })
                 last_state_key = key
             else:
-                # Регулярный тик — синхронизация времени
                 await websocket.send_json({
                     "type": "tick",
                     "status": status,
@@ -3250,6 +3345,12 @@ async def dice_webapp(body: dict, user: dict = Depends(get_current_user)):
     return {"ok": True, "result": result, "win": win, "profit": profit, "payout": payout}
 
 # ================== PLINKO ==================
+PLINKO_MULTS = {
+    8:  [5.6, 2.1, 1.1, 1.0, 0.5, 1.0, 1.1, 2.1, 5.6],
+    12: [10, 3, 1.6, 1.4, 1.1, 1.0, 0.5, 1.0, 1.1, 1.4, 1.6, 3, 10],
+    16: [16, 9, 2, 1.4, 1.4, 1.2, 1.1, 1.0, 0.5, 1.0, 1.1, 1.2, 1.4, 1.4, 2, 9, 16],
+}
+
 @app.post("/api/games/plinko/drop")
 async def plinko_drop(body: dict, user: dict = Depends(get_current_user)):
     ensure_game_enabled("plinko")
