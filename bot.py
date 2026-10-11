@@ -264,16 +264,28 @@ def duel_bet_kb(count: int, crazy: int, target: int):
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"duel:cfg:{count}:{crazy}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def duel_roll_kb():
+def duel_start_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎲 Кинуть кости", callback_data="duel:roll")],
-        [InlineKeyboardButton(text="🏳️ Сдаться",      callback_data="duel:surrender")]])
+        [InlineKeyboardButton(text="🤖 Ход бота", callback_data="duel:bot_roll")],
+        [InlineKeyboardButton(text="🏳️ Сдаться",   callback_data="duel:surrender")]])
+
+def duel_wait_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏳️ Сдаться", callback_data="duel:surrender")]])
 
 def duel_again_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Ещё раз",   callback_data="duel:again")],
         [InlineKeyboardButton(text="🎲 Настройки", callback_data="duel:home"),
          InlineKeyboardButton(text="🏠 Меню",      callback_data="menu:main")]])
+
+def _round_msg(st: dict, player_name: str, round_no: int) -> str:
+    ps = int(st.get("ps", 0)); bs = int(st.get("bs", 0))
+    target = int(st.get("target", 1))
+    return (f"🎲 <b>Score</b>\n"
+            f"{player_name}: {ps} очков\n"
+            f"🤖 {BOT_NAME}: {bs} очков\n\n"
+            f"Раунд {round_no} · до {target}")
 
 class DuelState(StatesGroup):
     custom_bet = State()
@@ -1097,18 +1109,19 @@ async def _duel_start(msg, tg_user, count, crazy, target, bet, edit=False):
         "count": count, "crazy": crazy, "target": target, "bet": bet
     }
 
+    player_name = _fmt_name(tg_user)
     icon = "🌀" if crazy else "🎲"
-    text = (f"{icon} <b>Дуэль началась!</b>\n\n"
-            f"🎲 {count} {_count_word(count)} · {'Крэзи' if crazy else 'Обычная'} · до {target} очк.\n"
+    text = (f"{icon} <b>Дуэль · {count} {_count_word(count)} · "
+            f"{'Крэзи' if crazy else 'Обычная'}</b>\n"
             f"Ставка: {bet:.2f} ₮\n\n"
-            f"{_score_block(0, 0, _fmt_name(tg_user))}\n\n"
-            f"Раунд 1 — жми кнопку.")
+            f"{_round_msg(st, player_name, 1)}\n\n"
+            f"Кинь 🎲 сам или жми <b>«🤖 Ход бота»</b>.")
     if edit:
-        try: await msg.edit_text(text, parse_mode="HTML", reply_markup=duel_roll_kb())
+        try: await msg.edit_text(text, parse_mode="HTML", reply_markup=duel_start_kb())
         except Exception:
-            await bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=duel_roll_kb())
+            await bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=duel_start_kb())
     else:
-        await msg.answer(text, parse_mode="HTML", reply_markup=duel_roll_kb())
+        await msg.answer(text, parse_mode="HTML", reply_markup=duel_start_kb())
 
 
 async def _answer(target, text, edit):
@@ -1118,25 +1131,24 @@ async def _answer(target, text, edit):
     except Exception: pass
 
 
-@dp.callback_query(F.data == "duel:roll")
-async def cb_duel_roll(cb: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "duel:bot_roll")
+async def cb_duel_bot_roll(cb: CallbackQuery, state: FSMContext):
     p = await get_or_create_profile(cb.from_user.model_dump())
     ar = await get_active_round(p["id"])
     if not ar or ar["game_type"] != "duel":
         return await cb.answer("Нет активной дуэли", show_alert=True)
     st = ar["state"]
-    if st.get("phase", "idle") != "idle":
-        return await cb.answer("Раунд уже идёт", show_alert=True)
+    if st.get("phase") != "idle":
+        return await cb.answer("Уже не твой ход", show_alert=True)
 
     count = int(st["count"])
-    round_no = st.get("round", 1)
     player_name = _fmt_name(cb.from_user.model_dump())
 
     await cb.answer()
     st["phase"] = "bot_rolling"
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
 
-    try: await cb.message.edit_text(f"🎲 Раунд {round_no}\n\n🤖 {BOT_NAME} бросает...")
+    try: await cb.message.edit_reply_markup(reply_markup=None)
     except Exception: pass
 
     try:
@@ -1155,21 +1167,19 @@ async def cb_duel_roll(cb: CallbackQuery, state: FSMContext):
     bot_sum = sum(bot_rolls)
     st["bot_rolls"] = bot_rolls
     st["player_rolls"] = []
-    st["phase"] = "awaiting_player_roll"
+    st["phase"] = "awaiting_player"
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
 
     word = _count_word(count)
     await bot.send_message(cb.message.chat.id,
         f"🤖 {BOT_NAME}: {_faces(bot_rolls)} = <b>{bot_sum}</b>\n\n"
-        f"👤 {player_name}, твой ход!\n"
-        f"Отправь 🎲 в чат <b>{count} {word}</b> (можно без ответа на сообщение).\n"
-        f"Прогресс: 0/{count}",
-        parse_mode="HTML")
+        f"👤 {player_name}, отправь 🎲 <b>{count} {word}</b> (без ответа на сообщение).",
+        parse_mode="HTML", reply_markup=duel_wait_kb())
 
 
 @dp.message(F.dice)
 async def on_dice_message(message: Message):
-    """Ловим кубики, отправленные игроком."""
+    """Ловим кубики от игрока. Без промежуточных сообщений."""
     if not message.dice or message.dice.emoji != "🎲":
         return
 
@@ -1181,9 +1191,9 @@ async def on_dice_message(message: Message):
         return
 
     st = ar["state"]
-    if st.get("phase") != "awaiting_player_roll":
-        try: await message.reply("⚠️ Сейчас не твой ход. Нажми «🎲 Кинуть кости».")
-        except Exception: pass
+    phase = st.get("phase", "idle")
+
+    if phase not in ("idle", "awaiting_player"):
         return
 
     count = int(st["count"]); crazy = int(st["crazy"]); target = int(st["target"])
@@ -1191,41 +1201,51 @@ async def on_dice_message(message: Message):
     round_no = st.get("round", 1)
     player_name = _fmt_name(message.from_user.model_dump())
 
-    val = message.dice.value
     player_rolls = st.get("player_rolls") or []
     if len(player_rolls) >= count:
         return
-
-    player_rolls.append(val)
+    player_rolls.append(message.dice.value)
     st["player_rolls"] = player_rolls
 
-    try: await message.delete()
-    except Exception: pass
-
     if len(player_rolls) < count:
+        if phase == "idle":
+            st["phase"] = "player_first"
         await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
-        await bot.send_message(message.chat.id,
-            f"🎲 Бросок {len(player_rolls)}/{count}: <b>{val}</b>\n"
-            f"Отправь ещё 🎲 ({len(player_rolls)+1}/{count})",
-            parse_mode="HTML")
         return
 
-    bot_rolls = st.get("bot_rolls") or []
+    if phase == "idle" or phase == "player_first":
+        st["phase"] = "bot_rolling"
+        await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
+        await asyncio.sleep(1.2)
+        try:
+            bot_rolls = await _duel_bot_roll(message.chat.id, count)
+        except Exception:
+            log.exception("duel bot roll failed (player first)")
+            await sb_rpc("change_balance", {"p_user_id": p["id"], "p_delta": bet})
+            await clear_active_round(p["id"])
+            await sb(supabase.table("transactions").insert({
+                "user_id": p["id"], "type": "admin", "amount": bet,
+                "currency": "USDT", "status": "completed",
+                "meta": {"action": "duel_refund", "reason": "bot_roll_failed_pf"}}))
+            return await bot.send_message(message.chat.id,
+                "❌ Ошибка анимации. Ставка возвращена.", reply_markup=duel_again_kb())
+        st["bot_rolls"] = bot_rolls
+    else:
+        bot_rolls = st.get("bot_rolls") or []
+
+    await asyncio.sleep(1.2)
+
     bot_sum = sum(bot_rolls); player_sum = sum(player_rolls)
 
     tie = (player_sum == bot_sum)
     if tie:
-        result_line = "🤝 Ничья — раунд переигрывается!"
+        pass
     elif crazy:
-        if player_sum < bot_sum:
-            ps += 1; result_line = "✅ Ты выиграл раунд!"
-        else:
-            bs += 1; result_line = "❌ Бот выиграл раунд"
+        if player_sum < bot_sum: ps += 1
+        else: bs += 1
     else:
-        if player_sum > bot_sum:
-            ps += 1; result_line = "✅ Ты выиграл раунд!"
-        else:
-            bs += 1; result_line = "❌ Бот выиграл раунд"
+        if player_sum > bot_sum: ps += 1
+        else: bs += 1
 
     st["ps"] = ps; st["bs"] = bs
     st["round"] = round_no + 1
@@ -1233,7 +1253,6 @@ async def on_dice_message(message: Message):
     if ps >= target or bs >= target:
         player_won = ps >= target
         payout = 0.0; profit = -bet
-
         if player_won:
             payout = round(bet * DUEL_PAYOUT, 8)
             profit = round(payout - bet, 8)
@@ -1262,8 +1281,9 @@ async def on_dice_message(message: Message):
             final = (f"🏆 <b>ПОБЕДА!</b>\n\n"
                      f"🤖 {BOT_NAME}: {_faces(bot_rolls)} = {bot_sum}\n"
                      f"👤 {player_name}: {_faces(player_rolls)} = {player_sum}\n\n"
-                     f"{result_line}\n\n"
-                     f"{_score_block(ps, bs, player_name)}\n\n"
+                     f"🎲 <b>Score</b>\n"
+                     f"{player_name}: {ps} очков\n"
+                     f"🤖 {BOT_NAME}: {bs} очков\n\n"
                      f"💰 Выплата: +{payout:.2f} ₮ (×{DUEL_PAYOUT})\n"
                      f"💵 Чистыми: +{profit:.2f} ₮\n"
                      f"💎 Баланс: <b>{bal:.2f} ₮</b>")
@@ -1271,12 +1291,13 @@ async def on_dice_message(message: Message):
             final = (f"💀 <b>Проигрыш</b>\n\n"
                      f"🤖 {BOT_NAME}: {_faces(bot_rolls)} = {bot_sum}\n"
                      f"👤 {player_name}: {_faces(player_rolls)} = {player_sum}\n\n"
-                     f"{result_line}\n\n"
-                     f"{_score_block(ps, bs, player_name)}\n\n"
+                     f"🎲 <b>Score</b>\n"
+                     f"{player_name}: {ps} очков\n"
+                     f"🤖 {BOT_NAME}: {bs} очков\n\n"
                      f"😢 Потеряно: −{bet:.2f} ₮\n"
                      f"💎 Баланс: <b>{bal:.2f} ₮</b>")
         if wager_reset:
-            final += "\n♻️ Бонус сброшен (баланс ниже порога)"
+            final += "\n♻️ Бонус сброшен"
 
         await bot.send_message(message.chat.id, final, parse_mode="HTML",
                               reply_markup=duel_again_kb())
@@ -1287,15 +1308,11 @@ async def on_dice_message(message: Message):
     st["bot_rolls"] = []
     await sb(supabase.table("active_rounds").update({"state": st}).eq("user_id", p["id"]))
 
-    icon = "🌀" if crazy else "🎲"
-    text = (f"{icon} Раунд {round_no} завершён\n\n"
-            f"🤖 {BOT_NAME}: {_faces(bot_rolls)} = <b>{bot_sum}</b>\n"
-            f"👤 {player_name}: {_faces(player_rolls)} = <b>{player_sum}</b>\n\n"
-            f"{result_line}\n\n"
-            f"{_score_block(ps, bs, player_name)}\n\n"
-            f"Раунд {st['round']} — жми кнопку.")
-    await bot.send_message(message.chat.id, text, parse_mode="HTML",
-                          reply_markup=duel_roll_kb())
+    await bot.send_message(
+        message.chat.id,
+        f"{_round_msg(st, player_name, st['round'])}\n\n"
+        f"Кинь 🎲 сам или жми <b>«🤖 Ход бота»</b>.",
+        parse_mode="HTML", reply_markup=duel_start_kb())
 
 
 @dp.callback_query(F.data == "duel:again")
@@ -1328,7 +1345,9 @@ async def cb_duel_surrender(cb: CallbackQuery, state: FSMContext):
     bal = float((await get_or_create_profile(cb.from_user.model_dump()))["balance"])
     await cb.message.edit_text(
         f"🏳️ <b>Сдался</b>\n\n"
-        f"{_score_block(ps, bs, player_name)}\n\n"
+        f"🎲 <b>Score</b>\n"
+        f"{player_name}: {ps} очков\n"
+        f"🤖 {BOT_NAME}: {bs} очков\n\n"
         f"Потеряно: −{bet:.2f} ₮\n"
         f"💎 Баланс: <b>{bal:.2f} ₮</b>",
         parse_mode="HTML", reply_markup=duel_again_kb())
